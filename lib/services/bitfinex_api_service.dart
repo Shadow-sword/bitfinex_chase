@@ -817,8 +817,10 @@ class BitfinexApiService {
         row['margin_balance'] += balance;
       }
     }
-    await _loadCatalogue();
-    for (final position in await getPositions()) {
+    final positions = await getPositions();
+    // Wallet/identity reads do not need the trading catalogue for flat accounts.
+    if (positions.isNotEmpty) await _loadCatalogue();
+    for (final position in positions) {
       final pair = _instruments[position.instrumentName];
       if (pair == null) continue;
       final row = grouped[pair.settlementCurrency];

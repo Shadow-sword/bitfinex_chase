@@ -127,14 +127,26 @@ class TradingPair {
     final currencies = normalized.contains(':')
         ? normalized.split(':')
         : [normalized.substring(0, 3), normalized.substring(3)];
-    final minimum = double.parse(config[3].toString());
-    final initialMargin = double.parse(config[8].toString());
-    if (currencies.length != 2 ||
-        currencies.any((c) => c.isEmpty) ||
-        !minimum.isFinite ||
-        minimum <= 0 ||
-        !initialMargin.isFinite ||
-        initialMargin <= 0) {
+    double requiredPositiveNumber(int index, String field) {
+      final raw = config[index];
+      final value = raw is num
+          ? raw.toDouble()
+          : raw is String
+          ? double.tryParse(raw)
+          : null;
+      if (value == null || !value.isFinite || value <= 0) {
+        throw FormatException('Invalid $field for $normalized');
+      }
+      return value;
+    }
+
+    final minimum = requiredPositiveNumber(3, 'minimum order size');
+    // Exchange-only pairs have no margin parameters. They are valid spot
+    // instruments and must not prevent the rest of the catalogue from loading.
+    final initialMargin = isFuture
+        ? requiredPositiveNumber(8, 'initial margin')
+        : null;
+    if (currencies.length != 2 || currencies.any((c) => c.isEmpty)) {
       throw const FormatException('Invalid pair metadata');
     }
     return TradingPair._verified(
@@ -147,7 +159,7 @@ class TradingPair {
       instrumentType: isFuture ? InstrumentType.linear : InstrumentType.spot,
       minTradeAmount: minimum,
       contractSize: 0.00000001,
-      maxLeverage: isFuture ? (1 / initialMargin).round() : 1,
+      maxLeverage: isFuture ? (1 / initialMargin!).round() : 1,
       maxPriceDeviationPercent: 0.3,
     );
   }

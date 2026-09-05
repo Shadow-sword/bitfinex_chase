@@ -60,6 +60,16 @@ dart run tool/paper_smoke.dart --trade
 
 `tool/paper_desktop_scenarios.dart` 在 Flutter 运行时中验证上层追价、价差过滤、断线与重新订阅，使用进程环境中的 `API_KEY` / `API_SECRET`。它是单独的业务验收入口，不是交付应用入口；发布和正常运行均使用 `lib/main.dart`。
 
+## 实盘只读验收
+
+将真实账户凭据保存在本地 `.env.live`（同样使用 `API_KEY` / `API_SECRET`，已被 Git 忽略），执行：
+
+```sh
+dart run tool/live_readonly.dart
+```
+
+验收覆盖认证、账户及余额模型、现货/合约元数据、盘口/Ticker、USD/BTC/CNY 估值、订单/持仓、成交历史和提款历史。传输层只允许指定的读取接口，并禁止交易/资金写请求和会触发撤单的 dead-man switch；输出不包含密钥或账户明细。当前账户没有订单/持仓时，只能验证对应空快照，不会为测试创建仓位。
+
 ## GitHub Actions Secrets
 
 在仓库 **Settings → Secrets and variables → Actions → Repository secrets** 中配置：
