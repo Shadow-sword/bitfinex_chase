@@ -13,6 +13,7 @@ class TradingPair {
   final double maxPriceDeviationPercent;
   final int maxLeverage;
   final bool isVerified;
+  final bool supportsMargin;
 
   const TradingPair({
     required this.symbol,
@@ -26,6 +27,7 @@ class TradingPair {
     required this.contractSize,
     this.maxPriceDeviationPercent = 0.3,
     this.maxLeverage = 50,
+    this.supportsMargin = false,
   }) : isVerified = false;
 
   const TradingPair._verified({
@@ -40,6 +42,7 @@ class TradingPair {
     required this.contractSize,
     required this.maxPriceDeviationPercent,
     required this.maxLeverage,
+    required this.supportsMargin,
   }) : isVerified = true;
 
   const TradingPair.unverified(
@@ -54,6 +57,7 @@ class TradingPair {
        minTradeAmount = 0,
        contractSize = 0,
        maxLeverage = 1,
+       supportsMargin = false,
        isVerified = false;
 
   TradingPair withMaxPriceDeviationPercent(double value) {
@@ -70,6 +74,7 @@ class TradingPair {
         contractSize: contractSize,
         maxPriceDeviationPercent: value,
         maxLeverage: maxLeverage,
+        supportsMargin: supportsMargin,
       );
     }
     return TradingPair._verified(
@@ -84,6 +89,7 @@ class TradingPair {
       contractSize: contractSize,
       maxPriceDeviationPercent: value,
       maxLeverage: maxLeverage,
+      supportsMargin: supportsMargin,
     );
   }
 
@@ -119,6 +125,7 @@ class TradingPair {
     String symbol,
     List<dynamic> config, {
     required bool isFuture,
+    bool supportsMargin = false,
   }) {
     if (config.length < 10) {
       throw const FormatException('Incomplete pair metadata');
@@ -161,6 +168,7 @@ class TradingPair {
       contractSize: 0.00000001,
       maxLeverage: isFuture ? (1 / initialMargin!).round() : 1,
       maxPriceDeviationPercent: 0.3,
+      supportsMargin: !isFuture && supportsMargin,
     );
   }
 
@@ -212,6 +220,7 @@ class TradingPair {
       maxPriceDeviationPercent:
           (map['maxPriceDeviationPercent'] as num?)?.toDouble() ?? 0.3,
       maxLeverage: (map['maxLeverage'] as num?)?.toInt() ?? 50,
+      supportsMargin: map['supportsMargin'] == true,
     );
   }
 
@@ -228,6 +237,7 @@ class TradingPair {
     'amountUnit': amountUnit.name,
     'maxPriceDeviationPercent': maxPriceDeviationPercent,
     'maxLeverage': maxLeverage,
+    'supportsMargin': supportsMargin,
   };
 
   static List<TradingPair> defaultPairs({bool paper = true}) => paper

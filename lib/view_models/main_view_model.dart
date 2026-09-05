@@ -57,6 +57,12 @@ class TradingPairVM {
   String get symbol => pair.symbol;
   // Spot-only setting: when true, place market orders (no price input)
   bool useMarketOrder;
+  bool useMargin = false;
+  String get tradingModeLabel => pair.type == TradingPairType.future
+      ? 'Derivatives'
+      : useMargin
+      ? 'Margin'
+      : 'Exchange';
 }
 
 class OrderVM {
@@ -1777,6 +1783,7 @@ class MainViewModel extends ChangeNotifier {
       postOnly: postOnly,
       reduceOnly: reduceOnly,
       leverage: tp.leverage,
+      marginTrading: tp.useMargin,
     );
   }
 
@@ -1791,6 +1798,7 @@ class MainViewModel extends ChangeNotifier {
       direction,
       amount,
       leverage: tp.leverage,
+      marginTrading: tp.useMargin,
       reduceOnly: reduceOnly,
     );
   }
@@ -1933,13 +1941,21 @@ class MainViewModel extends ChangeNotifier {
     );
   }
 
+  String? tradeHistoryModeLabel;
+
   Future<void> loadTradeHistory(
     String instrument,
     DateTime from,
-    DateTime to,
-  ) async {
+    DateTime to, {
+    bool marginTrading = false,
+  }) async {
     final requestGeneration = ++_tradeHistoryRequestGeneration;
-    final list = await _service.getTradeHistory(instrument, from, to);
+    final list = await _service.getTradeHistory(
+      instrument,
+      from,
+      to,
+      marginTrading: marginTrading,
+    );
     if (_disposed || requestGeneration != _tradeHistoryRequestGeneration) {
       return;
     }
@@ -1955,6 +1971,13 @@ class MainViewModel extends ChangeNotifier {
             _normalizeSymbol(metadata.symbol) == normalizedInstrument
         ? metadata
         : null;
+    tradeHistoryModeLabel = _tradeHistoryInstrument == null
+        ? 'Unverified market'
+        : metadata!.type == TradingPairType.future
+        ? 'Derivatives'
+        : marginTrading
+        ? 'Margin'
+        : 'Exchange';
     tradeHistory
       ..clear()
       ..addAll(list);
@@ -3119,6 +3142,11 @@ class MainViewModel extends ChangeNotifier {
     }
   }
 
+  bool canTradePair(TradingPairVM pair) =>
+      canTradeSymbol(pair.symbol) &&
+      (!pair.useMargin ||
+          (pair.pair.type == TradingPairType.spot && pair.pair.supportsMargin));
+
   bool canTradeSymbol(String symbol) =>
       isAuthenticated && _service.isInstrumentVerified(symbol);
 
@@ -3189,6 +3217,7 @@ class MainViewModel extends ChangeNotifier {
   }
 
   void _clearTradeHistoryState() {
+    tradeHistoryModeLabel = null;
     _tradeHistoryRequestGeneration++;
     _tradeHistoryInstrument = null;
     _tradeHistoryRequestedInstrument = null;

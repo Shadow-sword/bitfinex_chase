@@ -36,11 +36,12 @@ PositionPnl calculatePositionPnl({
 }) {
   _requireVerifiedPair(pair);
   _requireMatchingInstrument(pair, position.instrumentName);
-  if (pair.type != TradingPairType.future) {
+  if (pair.type != TradingPairType.future &&
+      !(pair.type == TradingPairType.spot && position.kind == 'margin')) {
     throw ArgumentError.value(
       pair.type,
       'pair',
-      'Position PnL is only supported for futures',
+      'Position PnL requires derivatives or a margin position',
     );
   }
 
@@ -61,6 +62,9 @@ PositionPnl calculatePositionPnl({
 
   late final Decimal settlementAmount;
   if (!canCalculate) {
+    if (position.kind == 'margin') {
+      throw ArgumentError('Margin PnL requires valid prices and exposure');
+    }
     settlementAmount = _finiteDecimalOrZero(position.floatingProfitLoss);
   } else {
     final amount = dFrom(nativeAmount);

@@ -242,12 +242,13 @@ class BitfinexApiService {
     );
     final symbols = _list(
       await _transport.publicGet(
-        'v2/conf/pub:list:pair:exchange,pub:list:pair:futures',
+        'v2/conf/pub:list:pair:exchange,pub:list:pair:futures,pub:list:pair:margin',
       ),
     );
-    if (info.length != 2 || symbols.length != 2) {
+    if (info.length != 2 || symbols.length != 3) {
       throw const FormatException('Invalid catalogue');
     }
+    final marginSymbols = _list(symbols[2]).cast<String>().toSet();
     final pairs = <String, TradingPair>{};
     final maxima = <String, double>{};
     for (var group = 0; group < 2; group++) {
@@ -263,6 +264,7 @@ class BitfinexApiService {
           symbol,
           config,
           isFuture: group == 1,
+          supportsMargin: marginSymbols.contains(symbol),
         );
         pairs[pair.symbol] = pair;
         maxima[pair.symbol] = _number(config[4]);
@@ -475,6 +477,7 @@ class BitfinexApiService {
     String? trigger,
     double? trailing,
     int leverage = 1,
+    bool marginTrading = false,
   }) async {
     _requireAuth();
     final pair = await getInstrument(instrumentName);
@@ -490,7 +493,13 @@ class BitfinexApiService {
     if (postOnly && orderType != 'limit') {
       throw ArgumentError('Post-only requires a limit order');
     }
-    if (reduceOnly && pair.type == TradingPairType.spot) {
+    if (marginTrading &&
+        (pair.type != TradingPairType.spot || !pair.supportsMargin)) {
+      throw ArgumentError(
+        'Margin trading is not supported for this instrument',
+      );
+    }
+    if (reduceOnly && pair.type == TradingPairType.spot && !marginTrading) {
       throw ArgumentError('Exchange orders do not support reduce-only');
     }
     if (leverage < 1 || leverage > pair.maxLeverage) {
@@ -526,7 +535,7 @@ class BitfinexApiService {
     final body = <String, dynamic>{
       'cid': cid,
       'type':
-          '${pair.type == TradingPairType.spot ? 'EXCHANGE ' : ''}$nativeType',
+          '${pair.type == TradingPairType.spot && !marginTrading ? 'EXCHANGE ' : ''}$nativeType',
       'symbol': 't${pair.symbol}',
       'amount': _amount(direction == 'buy' ? amount : -amount),
       'price': switch (orderType) {
@@ -570,6 +579,7 @@ class BitfinexApiService {
     final body = <String, dynamic>{
       'id': int.parse(orderId),
       'price': _price(newPrice),
+      'flags': order.flags,
     };
     // Repricing must omit amount. Re-sending the original amount after a partial
     // fill would increase the remaining order on Bitfinex.
@@ -820,11 +830,47 @@ class BitfinexApiService {
     final positions = await getPositions();
     // Wallet/identity reads do not need the trading catalogue for flat accounts.
     if (positions.isNotEmpty) await _loadCatalogue();
-    for (final position in positions) {
-      final pair = _instruments[position.instrumentName];
-      if (pair == null) continue;
-      final row = grouped[pair.settlementCurrency];
-      if (row != null) row['equity'] += position.floatingProfitLoss;
+    final valuations = await Future.wait(
+      positions.map((position) async {
+        final pair = _instruments[position.instrumentName];
+        if (pair == null) return null;
+        var pnl = position.floatingProfitLoss;
+        if (position.kind == 'margin') {
+          // Margin API P/L does not carry a currency. Calculate a quote-currency
+          // estimate explicitly rather than adding that value to an arbitrary wallet.
+          final quote = _parseTicker(
+            pair.symbol,
+            _list(await _transport.publicGet('v2/ticker/t${pair.symbol}')),
+          );
+          if (quote.markPrice <= 0 || position.averagePrice <= 0) {
+            throw StateError(
+              'Margin position valuation requires a valid reference price',
+            );
+          }
+          pnl =
+              (quote.markPrice - position.averagePrice) *
+              position.sizeCurrency *
+              (position.isLong ? 1 : -1);
+        }
+        return (currency: pair.settlementCurrency, pnl: pnl);
+      }),
+    );
+    for (final valuation in valuations) {
+      if (valuation == null) continue;
+      final row = grouped.putIfAbsent(
+        valuation.currency,
+        () => {
+          'currency': valuation.currency,
+          'balance': 0.0,
+          'equity': 0.0,
+          'available_funds': 0.0,
+          'available_withdrawal_funds': 0.0,
+          'locked_balance': 0.0,
+          'margin_balance': 0.0,
+          'margin_model': 'Position P/L estimate',
+        },
+      );
+      row['equity'] += valuation.pnl;
     }
     final user = _user!;
     return {
@@ -1012,6 +1058,17 @@ class BitfinexApiService {
         : 'rejected';
     final flags = (row[12] as num).toInt();
     final id = row[0].toString();
+    final meta = row.length > 31 && row[31] is Map ? row[31] as Map : null;
+    final postMeta = meta?[r'$F7'];
+    // Bitfinex consumes POST on a successful edit: later ou/REST snapshots can
+    // omit both the flag and $F7. Keep the known repricing policy for this
+    // session and explicitly send POST on every subsequent edit. An explicit
+    // false metadata value still overrides that policy.
+    final postOnly =
+        flags & 4096 != 0 ||
+        postMeta == 1 ||
+        postMeta == true ||
+        (postMeta == null && _orders[id]?.postOnly == true);
     if (row.length > 31 && row[31] is Map) {
       final leverage = (row[31] as Map)[r'$F33'];
       if (leverage is num) _orderLeverage[id] = leverage.toInt();
@@ -1024,10 +1081,8 @@ class BitfinexApiService {
       price: _number(type == 'stop_limit' ? row[19] : row[16]),
       orderState: state,
       orderType: type,
-      postOnly:
-          flags & 4096 != 0 ||
-          (row.length > 31 && row[31] is Map && (row[31] as Map)[r'$F7'] == 1),
-      reduceOnly: flags & 1024 != 0,
+      isExchange: (row[8] as String).startsWith('EXCHANGE '),
+      flags: flags | (postOnly ? 4096 : 0),
       stopPrice: type.startsWith('stop_') ? _number(row[16]) : null,
       trigger: rawType.contains('STOP') ? 'last_price' : null,
       trailing: type == 'trailing_stop' ? _number(row[18]) : null,
@@ -1039,17 +1094,24 @@ class BitfinexApiService {
   }
 
   Position _parsePosition(List<dynamic> r) {
-    if (r.length < 10) throw const FormatException('Invalid position');
+    if (r.length < 16 || (r[15] != 0 && r[15] != 1)) {
+      throw const FormatException('Missing or invalid position market type');
+    }
     final symbol = TradingPair.canonicalSymbol(r[0] as String);
     final amount = r[1] == 'CLOSED' ? 0.0 : _number(r[2]);
     final average = _number(r[3]);
     final pnl = r[6] == null ? 0.0 : _number(r[6]);
     // Position messages have no mark/index fields. A mark implied by reported
     // UPL is valid for linear contracts; otherwise leave unavailable as zero.
-    final mark = amount != 0 && r[6] != null ? average + pnl / amount : 0.0;
+    final isMargin = r[15] == 0;
+    final mark = isMargin
+        ? (_tickers[symbol]?.markPrice ?? 0.0)
+        : amount != 0 && r[6] != null
+        ? average + pnl / amount
+        : 0.0;
     return Position(
       instrumentName: symbol,
-      kind: r.length > 15 && r[15] == 0 ? 'margin' : 'future',
+      kind: isMargin ? 'margin' : 'future',
       size: amount.abs(),
       sizeCurrency: amount.abs(),
       direction: amount >= 0 ? 'buy' : 'sell',

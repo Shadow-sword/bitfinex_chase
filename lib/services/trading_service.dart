@@ -1256,8 +1256,8 @@ class TradingService {
       price: order.price,
       orderState: 'closed',
       orderType: order.orderType,
-      postOnly: order.postOnly,
-      reduceOnly: order.reduceOnly,
+      isExchange: order.isExchange,
+      flags: order.flags,
       stopPrice: order.stopPrice,
       trigger: order.trigger,
       trailing: order.trailing,
@@ -1340,6 +1340,7 @@ class TradingService {
     bool enableChasing = false,
     bool postOnly = true,
     int leverage = 1,
+    bool marginTrading = false,
     bool reduceOnly = false,
   }) async {
     if (enableChasing && !postOnly) {
@@ -1391,6 +1392,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         leverage: leverage,
+        marginTrading: marginTrading,
         direction: direction,
         amount: normalizedAmount.apiAmount,
         orderType: 'limit',
@@ -1418,6 +1420,7 @@ class TradingService {
     String direction,
     double amount, {
     int leverage = 1,
+    bool marginTrading = false,
     bool reduceOnly = false,
   }) async {
     if (!_authenticated) {
@@ -1443,6 +1446,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         leverage: leverage,
+        marginTrading: marginTrading,
         direction: direction,
         amount: apiAmount,
         orderType: 'market',
@@ -1509,6 +1513,18 @@ class TradingService {
     return order;
   }
 
+  bool _positionUsesMargin(TradingPair pair, Position position) {
+    if (pair.type == TradingPairType.spot && position.kind == 'margin') {
+      return true;
+    }
+    if (pair.type == TradingPairType.future && position.kind == 'future') {
+      return false;
+    }
+    throw StateError(
+      'Position market type does not match the verified instrument',
+    );
+  }
+
   Future<Order?> increasePosition(
     String instrumentName, {
     required String expectedDirection,
@@ -1522,18 +1538,24 @@ class TradingService {
     final current = _positions[_normalizeSymbol(instrumentName)];
     if (current == null ||
         current.size == 0 ||
-        current.kind == 'margin' ||
         current.direction != expectedDirection) {
       throw StateError(
         'Position has closed or changed direction; reopen the increase dialog',
       );
     }
+    final pair = _requireVerifiedInstrument(
+      instrumentName,
+      'increase position for',
+    );
+    if (pair == null) return null;
+    final isMargin = _positionUsesMargin(pair, current);
     return market
         ? placeMarketOrder(
             instrumentName,
             expectedDirection,
             amount,
             leverage: leverage,
+            marginTrading: isMargin,
           )
         : placeLimitOrder(
             instrumentName,
@@ -1543,6 +1565,7 @@ class TradingService {
             postOnly: postOnly,
             enableChasing: enableChasing,
             leverage: leverage,
+            marginTrading: isMargin,
           );
   }
 
@@ -1567,16 +1590,11 @@ class TradingService {
     Position? pos = _positions[_normalizeSymbol(instrumentName)];
     pos ??= await _api.getPosition(instrumentName);
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    if (pos?.kind == 'margin') {
-      _status(
-        'Margin positions must be managed on Bitfinex; this app supports spot and derivatives',
-      );
-      return null;
-    }
     if (pos == null || pos.size == 0) {
       _status('No position for $instrumentName');
       return null;
     }
+    final isMargin = _positionUsesMargin(pair, pos);
 
     if (!isValidPositionPercentage(percentage)) {
       _status('Target percentage must be greater than 0 and at most 100');
@@ -1623,6 +1641,7 @@ class TradingService {
         instrumentName,
         () => _api.placeOrder(
           instrumentName: instrumentName,
+          marginTrading: isMargin,
           direction: direction,
           amount: apiAmount,
           orderType: 'market',
@@ -1647,6 +1666,7 @@ class TradingService {
         instrumentName,
         () => _api.placeOrder(
           instrumentName: instrumentName,
+          marginTrading: isMargin,
           direction: direction,
           amount: apiAmount,
           orderType: 'limit',
@@ -1713,16 +1733,11 @@ class TradingService {
     Position? pos = _positions[_normalizeSymbol(instrumentName)];
     pos ??= await _api.getPosition(instrumentName);
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    if (pos?.kind == 'margin') {
-      _status(
-        'Margin positions must be managed on Bitfinex; this app supports spot and derivatives',
-      );
-      return null;
-    }
     if (pos == null || pos.size == 0) {
       _status('No position for $instrumentName');
       return null;
     }
+    final isMargin = _positionUsesMargin(pair, pos);
 
     final ob = _orderBooks[_normalizeSymbol(instrumentName)];
     if (ob == null) {
@@ -1790,12 +1805,13 @@ class TradingService {
       instrumentName,
       () => _api.placeOrder(
         instrumentName: instrumentName,
+        marginTrading: isMargin,
         direction: closeDirection,
         amount: apiAmount,
         orderType: 'limit',
         price: price,
         postOnly: true,
-        reduceOnly: pair.type == TradingPairType.future,
+        reduceOnly: pair.type == TradingPairType.future || isMargin,
       ),
     );
     if (!_isCurrentWrite(generation, instrumentName)) return null;
@@ -1850,16 +1866,11 @@ class TradingService {
     Position? pos = _positions[_normalizeSymbol(instrumentName)];
     pos ??= await _api.getPosition(instrumentName);
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    if (pos?.kind == 'margin') {
-      _status(
-        'Margin positions must be managed on Bitfinex; this app supports spot and derivatives',
-      );
-      return null;
-    }
     if (pos == null || pos.size == 0) {
       _status('No position for $instrumentName');
       return null;
     }
+    final isMargin = _positionUsesMargin(pair, pos);
     final direction = pos.isLong ? 'sell' : 'buy';
 
     ApiAmountNormalization normalizedAmount;
@@ -1910,11 +1921,12 @@ class TradingService {
       instrumentName,
       () => _api.placeOrder(
         instrumentName: instrumentName,
+        marginTrading: isMargin,
         direction: direction,
         amount: apiAmount,
         orderType: 'market',
         postOnly: false,
-        reduceOnly: pair.type == TradingPairType.future,
+        reduceOnly: pair.type == TradingPairType.future || isMargin,
       ),
     );
     if (!_isCurrentWrite(generation, instrumentName)) return null;
@@ -1975,16 +1987,11 @@ class TradingService {
     Position? pos = _positions[_normalizeSymbol(instrumentName)];
     pos ??= await _api.getPosition(instrumentName);
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    if (pos?.kind == 'margin') {
-      _status(
-        'Margin positions must be managed on Bitfinex; this app supports spot and derivatives',
-      );
-      return null;
-    }
     if (pos == null || pos.size == 0) {
       _status('No position for $instrumentName');
       return null;
     }
+    final isMargin = _positionUsesMargin(pair, pos);
     ApiAmountNormalization normalizedAmount;
     if (nativeApiAmount != null) {
       normalizedAmount = normalizeApiAmount(
@@ -2069,11 +2076,12 @@ class TradingService {
       instrumentName,
       () => _api.placeOrder(
         instrumentName: instrumentName,
+        marginTrading: isMargin,
         direction: direction,
         amount: apiAmount,
         orderType: type,
         price: price,
-        reduceOnly: pair.type == TradingPairType.future,
+        reduceOnly: pair.type == TradingPairType.future || isMargin,
         stopPrice: stopPx,
         trigger: triggerSource,
         trailing: trailing,
@@ -2090,60 +2098,46 @@ class TradingService {
   Future<List<TradeHistory>> getTradeHistory(
     String instrumentName,
     DateTime from,
-    DateTime to,
-  ) async {
+    DateTime to, {
+    bool marginTrading = false,
+  }) async {
     if (!_authenticated) {
       _status('Please authenticate first');
       return [];
     }
     final generation = _sessionGeneration;
     try {
-      // 1) Historical slice
-      final historical = await _api.getUserTradesByInstrument(
+      final pair = await _api.getInstrument(instrumentName);
+      final trades = await _api.getUserTradesByInstrument(
         instrumentName: instrumentName,
         from: from,
         to: to,
-        historical: true,
       );
       if (!_isCurrentPrivateOperation(generation)) return const [];
-      // 2) Recent slice (historical=false)
-      final recent = await _api.getUserTradesByInstrument(
-        instrumentName: instrumentName,
-        from: from,
-        to: to,
-        historical: false,
+      final List<TradeHistory> selected;
+      if (pair?.type == TradingPairType.spot) {
+        if (trades.any((t) => t.isExchange == null)) {
+          throw StateError(
+            'Some historical trades lack order mode; narrow the time range to separate Exchange and Margin safely',
+          );
+        }
+        selected = trades.where((t) => t.isExchange == !marginTrading).toList();
+      } else {
+        selected = trades;
+      }
+      _status(
+        'Loaded ${selected.length} trades (${pair == null
+            ? 'Unverified market'
+            : pair.type == TradingPairType.future
+            ? 'Derivatives'
+            : marginTrading
+            ? 'Margin'
+            : 'Exchange'})',
       );
-      if (!_isCurrentPrivateOperation(generation)) return const [];
-
-      // 3) Merge and de-duplicate by trade_id
-      final byId = <String, TradeHistory>{};
-      for (final t in historical) {
-        if (t.tradeId.isNotEmpty) {
-          byId.putIfAbsent(t.tradeId, () => t);
-        }
-      }
-      for (final t in recent) {
-        if (t.tradeId.isNotEmpty) {
-          byId[t.tradeId] = t; // prefer the recent slice on conflict
-        }
-      }
-      final responseOrder = <String, int>{};
-      var responseIndex = 0;
-      for (final tradeId in byId.keys) {
-        responseOrder[tradeId] = responseIndex++;
-      }
-      final merged = byId.values.toList()
-        ..sort((a, b) {
-          final byTimestamp = a.timestamp.compareTo(b.timestamp);
-          if (byTimestamp != 0) return byTimestamp;
-          return responseOrder[a.tradeId]!.compareTo(responseOrder[b.tradeId]!);
-        });
-
-      _status('Loaded ${merged.length} trades');
-      return merged;
+      return selected;
     } catch (e) {
       _status('Load trade history failed: $e');
-      return [];
+      rethrow;
     }
   }
 

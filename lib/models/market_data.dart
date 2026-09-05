@@ -105,8 +105,10 @@ class Order {
   final double price;
   final String orderState; // 'open', 'filled', etc.
   final String orderType;
-  final bool postOnly;
-  final bool reduceOnly;
+  final bool isExchange;
+  final int flags;
+  bool get postOnly => flags & 4096 != 0;
+  bool get reduceOnly => flags & 1024 != 0;
   final double? stopPrice;
   final String? trigger; // mark_price | index_price | last_price
   final double? trailing; // trailing offset for trailing_stop
@@ -124,8 +126,8 @@ class Order {
     required this.price,
     required this.orderState,
     required this.orderType,
-    required this.postOnly,
-    required this.reduceOnly,
+    required this.isExchange,
+    required this.flags,
     this.stopPrice,
     this.trigger,
     this.trailing,
@@ -170,6 +172,10 @@ class TradeHistory {
     this.iv,
     required this.markPrice,
   });
+
+  bool? get isExchange => orderType.trim().isEmpty
+      ? null
+      : orderType.trim().toUpperCase().startsWith('EXCHANGE ');
 
   bool get isBuy => direction == 'buy';
   bool get isSell => direction == 'sell';

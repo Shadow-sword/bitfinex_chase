@@ -17,11 +17,12 @@ flutter run -d macos
 
 - 盘口与行情订阅、买卖快捷操作、数量/计价金额换算、价格 tick 偏移。
 - 限价 Post-only、市价、改单和撤单；改单保留买卖方向，纯改价不重发数量，避免部分成交后增加剩余订单。
-- 普通限价单可选择 Post-only，合约订单可选择 Reduce-only；按订单追价、价差百分比过滤和最大偏离限制。下单/改单/撤单走原生 WebSocket，账户查询不占用交易请求队列。
+- 普通限价单可选择 Post-only，Margin 和合约订单可选择 Reduce-only；按订单追价、价差百分比过滤和最大偏离限制。下单/改单/撤单走原生 WebSocket，账户查询不占用交易请求队列。
 - 移动端底部导航（行情/订单/持仓/历史/账户/更多），滑动顺序与底栏一致，支持 Ctrl+Tab / Ctrl+Shift+Tab。
 - Android 后台连接保活默认关闭，可在 Home 开启；此选项支持持久化及配置导入导出。
 - 线性合约的杠杆、可用资金百分比下单、同方向加仓（数量/计价金额/资金比例）、按比例平仓、全部平仓、反手、保本止损。
-- 原生 Stop、Stop Limit、Trailing Stop；合约保护订单使用 reduce-only。
+- 现货交易对支持 Exchange / Margin 切换；Margin 支持限价/市价买卖、追价、加仓、按比例平仓、全部平仓、反手和保本止损。只有交易所确认支持保证金的交易对可以选择 Margin。
+- 原生 Stop、Stop Limit、Trailing Stop；Margin 和合约保护订单使用 reduce-only。
 - 成交历史按日期查询、快捷日期范围、日分组、订单聚合、成交选择与统计；分页按成交 ID 去重。
 - 钱包余额、可用/冻结金额和并发资产折算；隐藏零余额按 balance 判断；提现与提现历史。提现前需填写 Bitfinex method/network、地址和可选 Memo，用户确认后才提交。Paper 不提供实际提现。
 - 环境隔离的交易对元数据缓存，以及认证后的账户信息/提款记录缓存；缓存不会恢复实时价格、余额或交易权限。
@@ -33,7 +34,9 @@ flutter run -d macos
 - Bitfinex 原生止损使用**最新成交价**触发；没有等价的 Mark/Index 触发选择、Take Profit Market 和触发式 Take Profit Limit。相关选择已禁用，限价平仓仍可用于止盈。不会通过客户端轮询伪装成交易所托管的保护单。
 - 没有等价的公告列表/推送/已读状态和提款地址簿 API；公告页说明这一限制，提款改为显式填写地址和网络。
 - 账户显示实际钱包数据；不展示不存在的期权、Deribit session PNL 等字段。仓位参考价及估算 PNL 与交易所最终结算可能有差异。
-- 适配范围是**现货与线性衍生品**。Bitfinex 现货保证金仓位不能用 Exchange 订单平仓，应用会拒绝这种仓位操作。
+- 适配范围是**Exchange 现货、现货 Margin 与线性衍生品**。现货选择 Margin 后使用保证金钱包，需先在 Bitfinex 准备 Margin 抵押资金。Margin 按基础币数量或计价金额下单，实际杠杆由交易所保证金与借贷决定，不使用衍生品的杠杆参数或资金百分比下单。
+- 模式选择只影响新订单；现有订单和仓位按自身类型管理。现货成交历史可分别加载 Exchange / Margin，避免混算 FIFO 盈亏。Margin 未实现盈亏与账户净值按最新成交价估算为计价币金额，融资费用与最终结算可能不同。
+- Bitfinex 改单后的快照可能省略 Post-only 标志；应用在当前会话保留已知的 Post-only 设置，每次改单显式发送。重新连接后以交易所快照为准，追价需重新开启。
 - 网络断线后会退避重连，并利用当前会话中的凭证重新认证、恢复订阅；追价需重新开启。手动断开停止重连，写请求超时不会自动重发。交易所接口存在频率限制；追价收到改单错误会停止并记入日志，超时写请求不自动重发。
 
 ## 本地 Paper 验收
@@ -56,6 +59,8 @@ dart run tool/paper_smoke.dart --trade
 
 `dart run tool/paper_derivatives_smoke.dart` 验证合约下单、杠杆改单、三类止损、部分平仓、反手和清仓。余额不足时可显式加 `--fund`，用 0.0004 TESTBTC 对应的模拟美元兑换并划转模拟保证金。
 
+`dart run tool/paper_margin_smoke.dart` 验证同一交易对的 Exchange/Margin 隔离、Post-only 改单及越价取消、Margin 开多/加仓/减仓/反手做空/平仓、保护单与历史。要求 Paper 账户没有现存挂单或仓位；必要时临时从 Exchange 划转 TESTUSD，使保证金可用余额达到 25，结束后清理本轮订单/仓位并返还临时抵押资金（扣除交易损耗）。
+
 `tool/paper_view_model_scenarios.dart` 验证界面模型的认证、百分比下单、保护单、平仓、反手、历史、账户以及自动断线重连。它同样只读取进程环境中的验收凭证。
 
 `tool/paper_desktop_scenarios.dart` 在 Flutter 运行时中验证上层追价、价差过滤、断线与重新订阅，使用进程环境中的 `API_KEY` / `API_SECRET`。它是单独的业务验收入口，不是交付应用入口；发布和正常运行均使用 `lib/main.dart`。
@@ -68,7 +73,7 @@ dart run tool/paper_smoke.dart --trade
 dart run tool/live_readonly.dart
 ```
 
-验收覆盖认证、账户及余额模型、现货/合约元数据、盘口/Ticker、USD/BTC/CNY 估值、订单/持仓、成交历史和提款历史。传输层只允许指定的读取接口，并禁止交易/资金写请求和会触发撤单的 dead-man switch；输出不包含密钥或账户明细。当前账户没有订单/持仓时，只能验证对应空快照，不会为测试创建仓位。
+验收覆盖认证、账户及余额模型、现货/合约元数据及 Margin 资格、盘口/Ticker、USD/BTC/CNY 估值、订单/持仓、成交历史和提款历史。传输层只允许指定的读取接口，并禁止交易/资金写请求和会触发撤单的 dead-man switch；输出不包含密钥或账户明细。当前账户没有订单/持仓时，只能验证对应空快照，不会为测试创建仓位。
 
 ## GitHub Actions Secrets
 

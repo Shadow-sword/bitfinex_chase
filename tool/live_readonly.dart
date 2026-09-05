@@ -124,10 +124,22 @@ Future<void> main(List<String> args) async {
       }
     });
     await check('live spot/derivative instrument catalogue', () async {
-      for (final symbol in ['BTCUSD', 'ETHUSD', 'AAVE:USD', 'BTCF0:USTF0']) {
+      for (final symbol in [
+        'BTCUSD',
+        'BTCUST',
+        'ETHUSD',
+        'AAVE:USD',
+        'BTCF0:USTF0',
+      ]) {
         final pair = await api.getInstrument(symbol);
         if (pair == null || !pair.isVerified) {
           throw StateError('Missing instrument');
+        }
+        if (['BTCUSD', 'BTCUST'].contains(symbol) && !pair.supportsMargin) {
+          throw StateError('Expected verified Margin eligibility');
+        }
+        if (symbol == 'BTCF0:USTF0' && pair.supportsMargin) {
+          throw StateError('Derivative incorrectly classified as spot Margin');
         }
       }
     });

@@ -50,6 +50,7 @@ class _MainScreenState extends State<MainScreen>
       _tabs.animateTo(_tabOrder.indexOf(logicalTab));
   void _cycleTab(int delta) => _selectTab((_currentTab + delta + 8) % 8);
   String? _historySymbol;
+  bool _historyMargin = false;
   DateTime _historyFrom = DateTime.now().subtract(const Duration(days: 30));
   DateTime _historyTo = DateTime.now();
   String? _selectedQuickRange;
@@ -1094,6 +1095,11 @@ class _MainScreenState extends State<MainScreen>
                               'Bal: ${s.balance.toStringAsFixed(6)}  Avail: ${s.availableFunds.toStringAsFixed(6)}  Withdraw: ${s.availableWithdrawalFunds.toStringAsFixed(6)}',
                               style: TextStyle(color: color, fontSize: 12),
                             ),
+                            if (s.marginModel == 'Position P/L estimate')
+                              const Text(
+                                '未实现盈亏估值；无该币种钱包余额',
+                                style: TextStyle(fontSize: 12),
+                              ),
                             Text(
                               'Locked: ${s.lockedBalance.toStringAsFixed(6)}  Margin wallet: ${s.marginBalance.toStringAsFixed(6)}',
                               style: TextStyle(color: color, fontSize: 12),
@@ -1630,7 +1636,7 @@ class _MainScreenState extends State<MainScreen>
                                         ),
                                       ),
                                     FilledButton(
-                                      onPressed: _vm.canTradeSymbol(tp.symbol)
+                                      onPressed: _vm.canTradePair(tp)
                                           ? () => _handleManualOrderButton(
                                               tp,
                                               'buy',
@@ -1683,7 +1689,7 @@ class _MainScreenState extends State<MainScreen>
                                       style: FilledButton.styleFrom(
                                         backgroundColor: Colors.red,
                                       ),
-                                      onPressed: _vm.canTradeSymbol(tp.symbol)
+                                      onPressed: _vm.canTradePair(tp)
                                           ? () => _handleManualOrderButton(
                                               tp,
                                               'sell',
@@ -1822,10 +1828,9 @@ class _MainScreenState extends State<MainScreen>
                                         padding: const EdgeInsets.only(
                                           top: 6.0,
                                         ),
-                                        child: Row(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.end,
-                                          children: [_orderTypeToggle(tp)],
+                                        child: Align(
+                                          alignment: Alignment.centerRight,
+                                          child: _orderTypeToggle(tp),
                                         ),
                                       ),
                                     const SizedBox(height: 6),
@@ -1870,8 +1875,7 @@ class _MainScreenState extends State<MainScreen>
                                             ),
                                           ),
                                         FilledButton(
-                                          onPressed:
-                                              _vm.canTradeSymbol(tp.symbol)
+                                          onPressed: _vm.canTradePair(tp)
                                               ? () => _handleManualOrderButton(
                                                   tp,
                                                   'buy',
@@ -1928,8 +1932,7 @@ class _MainScreenState extends State<MainScreen>
                                           style: FilledButton.styleFrom(
                                             backgroundColor: Colors.red,
                                           ),
-                                          onPressed:
-                                              _vm.canTradeSymbol(tp.symbol)
+                                          onPressed: _vm.canTradePair(tp)
                                               ? () => _handleManualOrderButton(
                                                   tp,
                                                   'sell',
@@ -2295,6 +2298,16 @@ class _MainScreenState extends State<MainScreen>
                           ),
                         ),
                         _chip(typeLabel(), typeColor()),
+                        _chip(
+                          o.order.isExchange
+                              ? 'EXCHANGE'
+                              : tp.pair.type == TradingPairType.future
+                              ? 'DERIVATIVES'
+                              : tp.pair.type == TradingPairType.spot
+                              ? 'MARGIN'
+                              : 'MARGIN / DERIVATIVES',
+                          Colors.teal,
+                        ),
                         if (o.order.postOnly) _chip('POST', Colors.indigo),
                         if (o.order.reduceOnly) _chip('REDUCE', Colors.brown),
                       ],
@@ -2492,7 +2505,11 @@ class _MainScreenState extends State<MainScreen>
                   TradingPairVM(TradingPair.unverified(p.instrumentName));
               PositionPnl? positionPnl;
               if (tp.pair.isVerified &&
-                  tp.pair.type == TradingPairType.future) {
+                  (tp.pair.type == TradingPairType.future ||
+                      (p.kind == 'margin' &&
+                          dynMark > 0 &&
+                          p.averagePrice > 0 &&
+                          p.sizeCurrency > 0))) {
                 positionPnl = calculatePositionPnl(
                   pair: tp.pair,
                   position: p,
@@ -2515,7 +2532,7 @@ class _MainScreenState extends State<MainScreen>
                 // ignore: discarded_futures
                 _vm.ensureAccountMetricsForCurrency(marginCurrency);
               }
-              final liq = hasVerifiedFuture
+              final liq = hasVerifiedFuture || p.kind == 'margin'
                   ? _vm.getEstimatedLiquidationPrice(p)
                   : null;
               final entity = !hasVerifiedFuture || marginCurrency.isEmpty
@@ -2584,7 +2601,9 @@ class _MainScreenState extends State<MainScreen>
                       : '${_formatTradeHistoryNumber(baseExposure)} (unit unavailable)';
                   final avgStr = p.averagePrice.toString();
                   final markStr = dynMark.toString();
-                  final liqStr = liq != null ? liq.toStringAsFixed(2) : '-';
+                  final liqStr = liq != null
+                      ? _formatTradeHistoryPrice(liq)
+                      : '-';
                   final entStr = entity?.toStringAsFixed(2) ?? '-';
 
                   return ListTile(
@@ -2598,6 +2617,10 @@ class _MainScreenState extends State<MainScreen>
                       runSpacing: 4,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        _chip(
+                          p.kind == 'margin' ? 'MARGIN' : 'DERIVATIVES',
+                          Colors.teal,
+                        ),
                         Text(
                           p.instrumentName,
                           style: const TextStyle(fontWeight: FontWeight.w600),
@@ -2668,9 +2691,7 @@ class _MainScreenState extends State<MainScreen>
                           runSpacing: 4,
                           children: [
                             TextButton.icon(
-                              onPressed:
-                                  _vm.canTradeSymbol(p.instrumentName) &&
-                                      p.kind != 'margin'
+                              onPressed: _vm.canTradeSymbol(p.instrumentName)
                                   ? () => _showIncreasePositionDialog(
                                       _vm.positions[index],
                                     )
@@ -2688,9 +2709,7 @@ class _MainScreenState extends State<MainScreen>
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                 minimumSize: const Size(0, 0),
                               ),
-                              onPressed:
-                                  (_vm.canTradeSymbol(p.instrumentName) &&
-                                      p.kind != 'margin')
+                              onPressed: (_vm.canTradeSymbol(p.instrumentName))
                                   ? () => _showClosePositionDialog(
                                       _vm.positions[index],
                                     )
@@ -2706,9 +2725,7 @@ class _MainScreenState extends State<MainScreen>
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                 minimumSize: const Size(0, 0),
                               ),
-                              onPressed:
-                                  (_vm.canTradeSymbol(p.instrumentName) &&
-                                      p.kind != 'margin')
+                              onPressed: (_vm.canTradeSymbol(p.instrumentName))
                                   ? () => _showProtectPositionDialog(
                                       _vm.positions[index],
                                     )
@@ -2729,8 +2746,7 @@ class _MainScreenState extends State<MainScreen>
                                   minimumSize: const Size(0, 0),
                                 ),
                                 onPressed:
-                                    (_vm.canTradeSymbol(p.instrumentName) &&
-                                        p.kind != 'margin')
+                                    (_vm.canTradeSymbol(p.instrumentName))
                                     ? () => _vm.placeBreakevenStop(
                                         _vm.positions[index],
                                       )
@@ -2747,9 +2763,7 @@ class _MainScreenState extends State<MainScreen>
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                 minimumSize: const Size(0, 0),
                               ),
-                              onPressed:
-                                  (_vm.canTradeSymbol(p.instrumentName) &&
-                                      p.kind != 'margin')
+                              onPressed: (_vm.canTradeSymbol(p.instrumentName))
                                   ? () => _showReversePositionDialog(
                                       _vm.positions[index],
                                     )
@@ -2930,6 +2944,26 @@ class _MainScreenState extends State<MainScreen>
                           .toList(),
                       onChanged: (v) => setState(() => _historySymbol = v),
                     ),
+                    if (_historySymbol != null &&
+                        _vm.findTradingPairVm(_historySymbol!)?.pair.type ==
+                            TradingPairType.spot)
+                      DropdownButton<bool>(
+                        value: _historyMargin,
+                        items: const [
+                          DropdownMenuItem(
+                            value: false,
+                            child: Text('Exchange'),
+                          ),
+                          DropdownMenuItem(value: true, child: Text('Margin')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() => _historyMargin = value);
+                          }
+                        },
+                      ),
+                    if (_vm.tradeHistoryModeLabel != null)
+                      Text('Loaded: ${_vm.tradeHistoryModeLabel}'),
                     const Text('Range:'),
                     DropdownButton<String>(
                       value: _selectedQuickRange,
@@ -2982,7 +3016,7 @@ class _MainScreenState extends State<MainScreen>
                     ],
                     FilledButton(
                       onPressed: (_historySymbol != null && _vm.isAuthenticated)
-                          ? () {
+                          ? () async {
                               // 非自定义范围：按需在此时计算 From/To
                               if (_selectedQuickRange != null &&
                                   _selectedQuickRange != '自定义') {
@@ -2996,11 +3030,19 @@ class _MainScreenState extends State<MainScreen>
                                   _historyTo = to;
                                 });
                               }
-                              _vm.loadTradeHistory(
-                                _historySymbol!,
-                                _historyFrom,
-                                _historyTo,
-                              );
+                              try {
+                                await _vm.loadTradeHistory(
+                                  _historySymbol!,
+                                  _historyFrom,
+                                  _historyTo,
+                                  marginTrading: _historyMargin,
+                                );
+                              } catch (error) {
+                                if (!mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('历史加载失败: $error')),
+                                );
+                              }
                             }
                           : null,
                       child: const Text('Load'),
@@ -4167,6 +4209,7 @@ class _MainScreenState extends State<MainScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Instrument: ${tp.symbol}'),
+                  Text('Mode / Wallet: ${tp.tradingModeLabel}'),
                   Text('Side: ${direction.toUpperCase()}'),
                   Text('Limit Price: $est'),
                   if (usePct)
@@ -4196,7 +4239,7 @@ class _MainScreenState extends State<MainScreen>
                       if (!postOnly) enableChasing = false;
                     }),
                   ),
-                  if (isFut)
+                  if (isFut || tp.useMargin)
                     CheckboxListTile(
                       contentPadding: EdgeInsets.zero,
                       dense: true,
@@ -4212,7 +4255,7 @@ class _MainScreenState extends State<MainScreen>
                         listenable: _vm,
                         builder: (context, _) => Checkbox(
                           value: enableChasing,
-                          onChanged: postOnly && _vm.canTradeSymbol(tp.symbol)
+                          onChanged: postOnly && _vm.canTradePair(tp)
                               ? (v) =>
                                     setState(() => enableChasing = v ?? false)
                               : null,
@@ -4236,7 +4279,7 @@ class _MainScreenState extends State<MainScreen>
                 ListenableBuilder(
                   listenable: _vm,
                   builder: (context, _) => FilledButton(
-                    onPressed: _vm.canTradeSymbol(tp.symbol)
+                    onPressed: _vm.canTradePair(tp)
                         ? () => Navigator.pop(context, true)
                         : null,
                     child: const Text('Place'),
@@ -4311,6 +4354,7 @@ class _MainScreenState extends State<MainScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Instrument: ${tp.symbol}'),
+              Text('Mode / Wallet: ${tp.tradingModeLabel}'),
               Text('Side: ${direction.toUpperCase()}'),
               ..._orderAmountConfirmationLines(conversion),
               if (est != null)
@@ -4324,7 +4368,7 @@ class _MainScreenState extends State<MainScreen>
                   'Input: Percent  •  Size: ${(direction.toLowerCase() == 'buy' ? tp.buyPercent : tp.sellPercent).toStringAsFixed(0)}%  •  Lev: ${tp.leverage}x',
                   style: TextStyle(fontSize: 12, color: _subtleTextColor),
                 ),
-              if (isFut)
+              if (isFut || tp.useMargin)
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   dense: true,
@@ -4347,7 +4391,7 @@ class _MainScreenState extends State<MainScreen>
             ListenableBuilder(
               listenable: _vm,
               builder: (context, _) => FilledButton(
-                onPressed: _vm.canTradeSymbol(tp.symbol)
+                onPressed: _vm.canTradePair(tp)
                     ? () => Navigator.pop(context, true)
                     : null,
                 child: const Text('Place'),
@@ -4427,11 +4471,28 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _orderTypeToggle(TradingPairVM tp) {
-    // Spot only: toggle between Limit and Market
+    // The mode controls affect new spot orders only, never existing orders.
     return Wrap(
       spacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
+        if (tp.pair.type == TradingPairType.spot) ...[
+          ChoiceChip(
+            label: const Text('Exchange'),
+            selected: !tp.useMargin,
+            onSelected: (_) => setState(() => tp.useMargin = false),
+          ),
+          Tooltip(
+            message: '使用 Margin 保证金钱包；实际杠杆由交易所保证金和借贷决定',
+            child: ChoiceChip(
+              label: const Text('Margin'),
+              selected: tp.useMargin,
+              onSelected: tp.pair.isVerified && tp.pair.supportsMargin
+                  ? (_) => setState(() => tp.useMargin = true)
+                  : null,
+            ),
+          ),
+        ],
         const Text('Order:', style: TextStyle(fontSize: 12)),
         ChoiceChip(
           label: const Text('Limit'),
@@ -4746,7 +4807,9 @@ class _MainScreenState extends State<MainScreen>
     var chasing = false;
     var busy = false;
     String? error;
-    await _vm.ensureAccountMetricsForCurrency(draft.pair.marginCurrency);
+    if (position.position.kind != 'margin') {
+      await _vm.ensureAccountMetricsForCurrency(draft.pair.marginCurrency);
+    }
     if (!mounted) {
       amount.dispose();
       price.dispose();
@@ -4804,7 +4867,9 @@ class _MainScreenState extends State<MainScreen>
                   conversion.canSubmit &&
                   (market || (limitPrice != null && limitPrice > 0));
               return AlertDialog(
-                title: Text('加仓 $symbol · ${direction.toUpperCase()}'),
+                title: Text(
+                  '加仓 $symbol · ${direction.toUpperCase()} · ${position.position.kind == 'margin' ? 'Margin' : 'Derivatives'}',
+                ),
                 content: SizedBox(
                   width: 440,
                   child: SingleChildScrollView(
@@ -4850,10 +4915,11 @@ class _MainScreenState extends State<MainScreen>
                               value: 'quote',
                               child: Text(draft.pair.quoteCurrency),
                             ),
-                            const DropdownMenuItem(
-                              value: 'percent',
-                              child: Text('可用资金百分比'),
-                            ),
+                            if (position.position.kind != 'margin')
+                              const DropdownMenuItem(
+                                value: 'percent',
+                                child: Text('可用资金百分比'),
+                              ),
                           ],
                           onChanged: busy
                               ? null
@@ -4877,23 +4943,24 @@ class _MainScreenState extends State<MainScreen>
                           ),
                           onChanged: (_) => setDialogState(() {}),
                         ),
-                        DropdownButtonFormField<int>(
-                          initialValue: draft.leverage,
-                          decoration: const InputDecoration(
-                            labelText: 'Leverage',
-                          ),
-                          items: List.generate(
-                            draft.pair.maxLeverage,
-                            (i) => DropdownMenuItem(
-                              value: i + 1,
-                              child: Text('${i + 1}x'),
+                        if (position.position.kind != 'margin')
+                          DropdownButtonFormField<int>(
+                            initialValue: draft.leverage,
+                            decoration: const InputDecoration(
+                              labelText: 'Leverage',
                             ),
+                            items: List.generate(
+                              draft.pair.maxLeverage,
+                              (i) => DropdownMenuItem(
+                                value: i + 1,
+                                child: Text('${i + 1}x'),
+                              ),
+                            ),
+                            onChanged: busy
+                                ? null
+                                : (v) =>
+                                      setDialogState(() => draft.leverage = v!),
                           ),
-                          onChanged: busy
-                              ? null
-                              : (v) =>
-                                    setDialogState(() => draft.leverage = v!),
-                        ),
                         if (!market)
                           CheckboxListTile(
                             contentPadding: EdgeInsets.zero,
