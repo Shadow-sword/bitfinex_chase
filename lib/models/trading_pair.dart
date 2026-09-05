@@ -233,11 +233,13 @@ class TradingPair {
   static List<TradingPair> defaultPairs({bool paper = true}) => paper
       ? const [
           TradingPair.unverified('TESTBTC:TESTUSD'),
+          TradingPair.unverified('TESTBTC:TESTUSDT'),
           TradingPair.unverified('TESTETH:TESTUSD'),
           TradingPair.unverified('TESTBTCF0:TESTUSDTF0'),
         ]
       : const [
           TradingPair.unverified('BTCUSD'),
+          TradingPair.unverified('BTCUST'),
           TradingPair.unverified('ETHUSD'),
           TradingPair.unverified('BTCF0:USTF0'),
         ];

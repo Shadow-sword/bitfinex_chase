@@ -11,7 +11,7 @@ flutter run -d macos
 
 在连接面板选择 **Paper Trading** 或 Live，填写 **API Key / API Secret**，连接并认证。两个模式使用相同 API 域名；认证时读取账户 `PPT_ENABLED` 标志，账户与所选模式不匹配就断开。应用不会自动读取或打包项目 `.env`；它仅供本地验收工具使用。
 
-默认 Paper 交易对：`TESTBTC:TESTUSD`、`TESTETH:TESTUSD`、`TESTBTCF0:TESTUSDTF0`。Live 默认：`BTCUSD`、`ETHUSD`、`BTCF0:USTF0`。自定义交易对可填写带或不带小写 `t` 前缀的 Bitfinex 符号，交易前会从交易所目录验证。衍生品需要在对应保证金钱包准备结算资产。
+默认 Paper 交易对：`TESTBTC:TESTUSD`、`TESTBTC:TESTUSDT`、`TESTETH:TESTUSD`、`TESTBTCF0:TESTUSDTF0`。Live 默认：`BTCUSD`、`BTCUST`（BTC/USDT 现货）、`ETHUSD`、`BTCF0:USTF0`。自定义交易对可填写带或不带小写 `t` 前缀的 Bitfinex 符号，交易前会从交易所目录验证。衍生品需要在对应保证金钱包准备结算资产。
 
 ## 功能
 
