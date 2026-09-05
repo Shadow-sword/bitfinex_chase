@@ -209,50 +209,56 @@ class _MainScreenState extends State<MainScreen>
             ): () =>
                 _cycleTab(-1),
           },
-          child: Scaffold(
-            appBar: AppBar(
-              title: Text(
-                _mobileNavigation ? _tabLabels[_currentTab] : 'BitfinexChase',
-              ),
-              bottom: _mobileNavigation
-                  ? null
-                  : TabBar(
-                      controller: _tabs,
-                      isScrollable: true,
-                      labelPadding: const EdgeInsets.symmetric(horizontal: 30),
-                      tabs: [
-                        const Tab(text: 'Home'),
-                        const Tab(text: 'Account'),
-                        Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
-                        Tab(text: 'Orders (${_vm.activeOrders.length})'),
-                        Tab(text: 'Positions (${_vm.positions.length})'),
-                        const Tab(text: 'Trade History'),
-                        Tab(
-                          text: _vm.unreadAnnouncementCount > 0
-                              ? 'Announcement (${_vm.unreadAnnouncementCount})'
-                              : 'Announcement',
+          child: Focus(
+            autofocus: true,
+            debugLabel: 'Page shortcuts',
+            child: Scaffold(
+              appBar: AppBar(
+                title: Text(
+                  _mobileNavigation ? _tabLabels[_currentTab] : 'BitfinexChase',
+                ),
+                bottom: _mobileNavigation
+                    ? null
+                    : TabBar(
+                        controller: _tabs,
+                        isScrollable: true,
+                        labelPadding: const EdgeInsets.symmetric(
+                          horizontal: 30,
                         ),
-                        Tab(text: 'Logs (${_vm.statusMessages.length})'),
+                        tabs: [
+                          const Tab(text: 'Home'),
+                          const Tab(text: 'Account'),
+                          Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
+                          Tab(text: 'Orders (${_vm.activeOrders.length})'),
+                          Tab(text: 'Positions (${_vm.positions.length})'),
+                          const Tab(text: 'Trade History'),
+                          Tab(
+                            text: _vm.unreadAnnouncementCount > 0
+                                ? 'Announcement (${_vm.unreadAnnouncementCount})'
+                                : 'Announcement',
+                          ),
+                          Tab(text: 'Logs (${_vm.statusMessages.length})'),
+                        ],
+                      ),
+              ),
+              body: Column(
+                children: [
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabs,
+                      children: [
+                        for (final tab in _tabOrder)
+                          Builder(builder: (_) => _buildTab(tab)),
                       ],
                     ),
-            ),
-            body: Column(
-              children: [
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabs,
-                    children: [
-                      for (final tab in _tabOrder)
-                        Builder(builder: (_) => _buildTab(tab)),
-                    ],
                   ),
-                ),
-                if (!_mobileNavigation) _buildFooter(context),
-              ],
+                  if (!_mobileNavigation) _buildFooter(context),
+                ],
+              ),
+              bottomNavigationBar: _mobileNavigation
+                  ? _buildMobileNavigation()
+                  : null,
             ),
-            bottomNavigationBar: _mobileNavigation
-                ? _buildMobileNavigation()
-                : null,
           ),
         );
       },
