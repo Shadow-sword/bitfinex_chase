@@ -187,12 +187,19 @@ class BitfinexApiService {
     _transport.setCredentials(clientId.trim(), clientSecret.trim());
     try {
       final user = await _transport.privatePost('v2/auth/r/info/user');
-      if (user is! List || user.length <= 21 || user[21] is! num) {
+      if (user is! List || user.length <= 21) {
         throw const FormatException('Cannot verify Paper/Live account type');
       }
-      if ((user[21] == 1) != _paper) {
+      // The official Bitfinex model treats an unset PPT_ENABLED as false.
+      // A present null flag is distinct from a missing/truncated user response.
+      final accountIsPaper = switch (user[21]) {
+        1 || true => true,
+        0 || false || null => false,
+        _ => throw const FormatException('Invalid PPT_ENABLED account flag'),
+      };
+      if (accountIsPaper != _paper) {
         throw StateError(
-          'Account type mismatch: select ${user[21] == 1 ? 'Paper' : 'Live'} before connecting',
+          'Account type mismatch: select ${accountIsPaper ? 'Paper' : 'Live'} before connecting',
         );
       }
       final nonce = _transport.nextNonce();
