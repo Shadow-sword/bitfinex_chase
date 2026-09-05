@@ -57,6 +57,18 @@ class Withdrawal {
     );
   }
 
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'currency': currency,
+    'amount': amount,
+    'fee': fee,
+    'address': address,
+    'state': state,
+    'transaction_id': transactionId,
+    'created_timestamp': createdTimestamp,
+    'updated_timestamp': updatedTimestamp,
+  };
+
   DateTime? get createdAt => createdTimestamp > 0
       ? DateTime.fromMillisecondsSinceEpoch(createdTimestamp).toLocal()
       : null;

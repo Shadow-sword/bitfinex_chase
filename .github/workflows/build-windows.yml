@@ -1,21 +1,53 @@
-name: Build Bitfinex Windows
+name: Build Bitfinex Desktop
 on:
   push:
     branches: [main]
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows
+            artifact: bitfinex-chase-windows
+            path: build/windows/x64/runner/Release/
+          - runner: macos-latest
+            target: macos
+            artifact: bitfinex-chase-macos
+            path: build/bitfinex-chase-macos.dmg
+          - runner: ubuntu-latest
+            target: linux
+            artifact: bitfinex-chase-linux
+            path: build/bitfinex-chase-linux.tar.gz
+    runs-on: ${{ matrix.runner }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: subosito/flutter-action@v2
-      with:
-        channel: stable
-    - name: Install dependencies
-      run: flutter pub get
-    - name: Build Windows
-      run: flutter build windows --release
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: bitfinex-chase-windows
-        path: build/windows/x64/runner/Release/
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Build desktop app
+        run: flutter build ${{ matrix.target }} --release --target lib/main.dart
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/macos-package
+          ditto "build/macos/Build/Products/Release/Bitfinex Chase.app" "build/macos-package/Bitfinex Chase.app"
+          ln -s /Applications build/macos-package/Applications
+          hdiutil create -volname "Bitfinex Chase" -srcfolder build/macos-package -ov -format UDZO build/bitfinex-chase-macos.dmg
+      - name: Package Linux application
+        if: runner.os == 'Linux'
+        run: tar -czf build/bitfinex-chase-linux.tar.gz -C build/linux/x64/release/bundle .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error

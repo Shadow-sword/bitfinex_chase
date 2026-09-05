@@ -1,0 +1,108 @@
+name: Build Bitfinex Mobile
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  android:
+    name: Android (${{ matrix.abi }}, signed release APK)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            flutter_target: android-arm64
+          - abi: armeabi-v7a
+            flutter_target: android-arm
+          - abi: x86_64
+            flutter_target: android-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          names = ('ANDROID_KEY_ALIAS', 'ANDROID_KEY_BASE64', 'ANDROID_KEY_PASSWORD')
+          for name in names:
+              if not os.environ.get(name):
+                  raise SystemExit(f'Missing {name} secret')
+
+          keystore = Path(os.environ['RUNNER_TEMP']) / 'bitfinex-chase-upload.jks'
+          data = base64.b64decode(''.join(os.environ['ANDROID_KEY_BASE64'].split()), validate=True)
+          if not data:
+              raise SystemExit('Android keystore is empty')
+          keystore.write_bytes(data)
+
+          # Escape Java Properties values, including passwords with backslashes,
+          # whitespace or non-ASCII characters, without printing any secret.
+          def property_value(value):
+              encoded = value.encode('utf-16-be')
+              return ''.join('\\u' + encoded[i:i + 2].hex() for i in range(0, len(encoded), 2))
+
+          properties = {
+              'storeFile': str(keystore),
+              'storePassword': os.environ['ANDROID_KEY_PASSWORD'],
+              'keyAlias': os.environ['ANDROID_KEY_ALIAS'],
+              'keyPassword': os.environ['ANDROID_KEY_PASSWORD'],
+          }
+          Path('android/key.properties').write_text(
+              ''.join(f'{key}={property_value(value)}\n' for key, value in properties.items()),
+              encoding='ascii',
+          )
+          PY
+          keytool -list -keystore "$RUNNER_TEMP/bitfinex-chase-upload.jks" \
+            -storepass:env ANDROID_KEY_PASSWORD -alias "$ANDROID_KEY_ALIAS" > /dev/null
+
+      - name: Build Android app
+        run: flutter build apk --release --target lib/main.dart --target-platform ${{ matrix.flutter_target }} --split-per-abi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitfinex-chase-android-${{ matrix.abi }}
+          path: build/app/outputs/flutter-apk/app-${{ matrix.abi }}-release.apk
+          if-no-files-found: error
+
+      - name: Remove signing files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/bitfinex-chase-upload.jks" android/key.properties
+
+  ios-check:
+    name: iOS release compile check (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Compile iOS app without signing
+        run: flutter build ios --release --no-codesign --target lib/main.dart

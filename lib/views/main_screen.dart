@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'package:flutter/services.dart';
 
@@ -30,10 +31,24 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final TradingService _service;
   late final MainViewModel _vm;
   late TabController _tabs;
+  bool _mobileNavigation = false;
+  List<int> get _tabOrder => _mobileNavigation
+      ? const [2, 3, 4, 5, 1, 0, 6, 7]
+      : const [0, 1, 2, 3, 4, 5, 6, 7];
+  int get _currentTab => _tabOrder[_tabs.index];
+  static const _tabLabels = ['首页', '账户', '行情', '订单', '持仓', '历史', '公告', '日志'];
+
+  void _tabChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _selectTab(int logicalTab) =>
+      _tabs.animateTo(_tabOrder.indexOf(logicalTab));
+  void _cycleTab(int delta) => _selectTab((_currentTab + delta + 8) % 8);
   String? _historySymbol;
   DateTime _historyFrom = DateTime.now().subtract(const Duration(days: 30));
   DateTime _historyTo = DateTime.now();
@@ -105,7 +120,7 @@ class _MainScreenState extends State<MainScreen>
     _service = widget.tradingService ?? TradingService();
     _vm = MainViewModel(_service);
     WidgetsBinding.instance.addObserver(this);
-    _tabs = TabController(length: 8, vsync: this);
+    _tabs = TabController(length: 8, vsync: this)..addListener(_tabChanged);
     // Initialize percent buffer text and commit on focus loss
     _percentBufferController.text = (_vm.percentSizingBuffer * 100)
         .toStringAsFixed(0);
@@ -182,66 +197,145 @@ class _MainScreenState extends State<MainScreen>
     return AnimatedBuilder(
       animation: _vm,
       builder: (context, _) {
-        _ensureTabController();
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('BitfinexChase'),
-            bottom: TabBar(
-              controller: _tabs,
-              isScrollable: true,
-              labelPadding: const EdgeInsets.symmetric(horizontal: 30),
-              tabs: [
-                const Tab(text: 'Home'),
-                const Tab(text: 'Account'),
-                Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
-                Tab(text: 'Orders (${_vm.activeOrders.length})'),
-                Tab(text: 'Positions (${_vm.positions.length})'),
-                const Tab(text: 'Trade History'),
-                Tab(
-                  text: _vm.unreadAnnouncementCount > 0
-                      ? 'Announcement (${_vm.unreadAnnouncementCount})'
-                      : 'Announcement',
+        _ensureTabController(MediaQuery.sizeOf(context).width <= 768);
+        return CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.tab, control: true): () =>
+                _cycleTab(1),
+            const SingleActivator(
+              LogicalKeyboardKey.tab,
+              control: true,
+              shift: true,
+            ): () =>
+                _cycleTab(-1),
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              title: Text(
+                _mobileNavigation ? _tabLabels[_currentTab] : 'BitfinexChase',
+              ),
+              bottom: _mobileNavigation
+                  ? null
+                  : TabBar(
+                      controller: _tabs,
+                      isScrollable: true,
+                      labelPadding: const EdgeInsets.symmetric(horizontal: 30),
+                      tabs: [
+                        const Tab(text: 'Home'),
+                        const Tab(text: 'Account'),
+                        Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
+                        Tab(text: 'Orders (${_vm.activeOrders.length})'),
+                        Tab(text: 'Positions (${_vm.positions.length})'),
+                        const Tab(text: 'Trade History'),
+                        Tab(
+                          text: _vm.unreadAnnouncementCount > 0
+                              ? 'Announcement (${_vm.unreadAnnouncementCount})'
+                              : 'Announcement',
+                        ),
+                        Tab(text: 'Logs (${_vm.statusMessages.length})'),
+                      ],
+                    ),
+            ),
+            body: Column(
+              children: [
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabs,
+                    children: [
+                      for (final tab in _tabOrder)
+                        Builder(builder: (_) => _buildTab(tab)),
+                    ],
+                  ),
                 ),
-                Tab(text: 'Logs (${_vm.statusMessages.length})'),
+                if (!_mobileNavigation) _buildFooter(context),
               ],
             ),
-          ),
-          body: Column(
-            children: [
-              Expanded(
-                child: TabBarView(
-                  controller: _tabs,
-                  children: [
-                    _buildHomeTab(),
-                    _buildAccountTab(),
-                    _buildPairsTab(),
-                    _buildOrdersTab(),
-                    _buildPositionsTab(),
-                    _buildHistoryTab(),
-                    _buildAnnouncementTab(),
-                    _buildLogsTab(),
-                  ],
-                ),
-              ),
-              _buildFooter(context),
-            ],
+            bottomNavigationBar: _mobileNavigation
+                ? _buildMobileNavigation()
+                : null,
           ),
         );
       },
     );
   }
 
-  void _ensureTabController() {
-    const desired = 8;
-    if (_tabs.length != desired) {
-      final currentIndex = _tabs.index;
-      _tabs.dispose();
-      _tabs = TabController(
-        length: desired,
-        vsync: this,
-        initialIndex: currentIndex.clamp(0, desired - 1),
-      );
-    }
+  void _ensureTabController(bool mobile) {
+    if (mobile == _mobileNavigation) return;
+    final logicalTab = _currentTab;
+    _tabs.removeListener(_tabChanged);
+    _tabs.dispose();
+    _mobileNavigation = mobile;
+    _tabs = TabController(
+      length: 8,
+      vsync: this,
+      initialIndex: _tabOrder.indexOf(logicalTab),
+    )..addListener(_tabChanged);
+  }
+
+  Widget _buildTab(int tab) => switch (tab) {
+    0 => _buildHomeTab(),
+    1 => _buildAccountTab(),
+    2 => _buildPairsTab(),
+    3 => _buildOrdersTab(),
+    4 => _buildPositionsTab(),
+    5 => _buildHistoryTab(),
+    6 => _buildAnnouncementTab(),
+    7 => _buildLogsTab(),
+    _ => throw StateError('Unknown tab'),
+  };
+
+  Widget _buildMobileNavigation() {
+    const mainTabs = [2, 3, 4, 5, 1];
+    final selected = mainTabs.indexOf(_currentTab);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildFooter(context),
+        NavigationBar(
+          height: 64,
+          selectedIndex: selected < 0 ? 5 : selected,
+          onDestinationSelected: (index) async {
+            if (index < 5) {
+              _selectTab(mainTabs[index]);
+              return;
+            }
+            final tab = await showModalBottomSheet<int>(
+              context: context,
+              builder: (context) => SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final tab in const [0, 6, 7])
+                      ListTile(
+                        title: Text(_tabLabels[tab]),
+                        onTap: () => Navigator.pop(context, tab),
+                      ),
+                  ],
+                ),
+              ),
+            );
+            if (mounted && tab != null) _selectTab(tab);
+          },
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.candlestick_chart),
+              label: '行情',
+            ),
+            NavigationDestination(icon: Icon(Icons.list_alt), label: '订单'),
+            NavigationDestination(
+              icon: Icon(Icons.account_balance_wallet),
+              label: '持仓',
+            ),
+            NavigationDestination(icon: Icon(Icons.history), label: '历史'),
+            NavigationDestination(
+              icon: Icon(Icons.account_balance),
+              label: '账户',
+            ),
+            NavigationDestination(icon: Icon(Icons.more_horiz), label: '更多'),
+          ],
+        ),
+      ],
+    );
   }
 
   Widget _buildHeader(BuildContext context) {
@@ -337,6 +431,26 @@ class _MainScreenState extends State<MainScreen>
                         : null,
                     child: const Text('Authenticate'),
                   ),
+                  OutlinedButton(
+                    onPressed: _vm.isAuthenticated ? _vm.disconnect : null,
+                    child: const Text('Logout'),
+                  ),
+                  if (!kIsWeb &&
+                      defaultTargetPlatform == TargetPlatform.android)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Checkbox(
+                          value: _vm.androidBackgroundKeepAlive,
+                          onChanged: (value) {
+                            if (value != null) {
+                              _vm.setAndroidBackgroundKeepAlive(value);
+                            }
+                          },
+                        ),
+                        const Text('开启通知并保持后台连接'),
+                      ],
+                    ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -610,6 +724,8 @@ class _MainScreenState extends State<MainScreen>
     final ui = (settings['ui'] as Map?)?.cast<String, dynamic>() ?? {};
 
     // App settings -> ViewModel
+    final keepAlive = app['androidBackgroundKeepAlive'];
+    if (keepAlive is bool) await _vm.setAndroidBackgroundKeepAlive(keepAlive);
     final isTestnet = app['isTestnet'];
     if (isTestnet is bool) {
       await _vm.setIsTestnet(isTestnet);
@@ -706,6 +822,8 @@ class _MainScreenState extends State<MainScreen>
           child: Row(
             children: [
               const Text('Account'),
+              if (_vm.accountInfoFromCache)
+                const Text('  缓存账户信息，余额待刷新', style: TextStyle(fontSize: 12)),
               const SizedBox(width: 8),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -1102,7 +1220,13 @@ class _MainScreenState extends State<MainScreen>
               const Divider(height: 24),
               Row(
                 children: [
-                  const Expanded(child: Text('Withdrawal History 提款历史')),
+                  Expanded(
+                    child: Text(
+                      _vm.withdrawalsFromCache
+                          ? 'Withdrawal History 提款历史（缓存，等待刷新）'
+                          : 'Withdrawal History 提款历史',
+                    ),
+                  ),
                   IconButton(
                     onPressed: _vm.isAuthenticated && !_vm.loadingWithdrawals
                         ? () => _vm.loadWithdrawals(currency: _withdrawCurrency)
@@ -2537,6 +2661,18 @@ class _MainScreenState extends State<MainScreen>
                           spacing: 8,
                           runSpacing: 4,
                           children: [
+                            TextButton.icon(
+                              onPressed:
+                                  _vm.canTradeSymbol(p.instrumentName) &&
+                                      p.kind != 'margin'
+                                  ? () => _showIncreasePositionDialog(
+                                      _vm.positions[index],
+                                    )
+                                  : null,
+                              icon: const Icon(Icons.add, size: 16),
+                              label: const Text('加仓'),
+                            ),
+
                             TextButton(
                               style: TextButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(
@@ -4008,6 +4144,8 @@ class _MainScreenState extends State<MainScreen>
       return;
     }
     bool enableChasing = false;
+    bool postOnly = true;
+    bool reduceOnly = false;
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -4024,7 +4162,7 @@ class _MainScreenState extends State<MainScreen>
                 children: [
                   Text('Instrument: ${tp.symbol}'),
                   Text('Side: ${direction.toUpperCase()}'),
-                  Text('Limit Price: ${est.toStringAsFixed(2)}'),
+                  Text('Limit Price: $est'),
                   if (usePct)
                     Text(
                       'Input: Percent  •  Size: '
@@ -4042,6 +4180,24 @@ class _MainScreenState extends State<MainScreen>
                   Text(
                     'Notional: ${conversion.notional.toStringAsFixed(2)} $quote',
                   ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text('Post-only'),
+                    value: postOnly,
+                    onChanged: (v) => setState(() {
+                      postOnly = v!;
+                      if (!postOnly) enableChasing = false;
+                    }),
+                  ),
+                  if (isFut)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: const Text('Reduce-only（仅减仓）'),
+                      value: reduceOnly,
+                      onChanged: (v) => setState(() => reduceOnly = v!),
+                    ),
                   const SizedBox(height: 8),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -4050,7 +4206,7 @@ class _MainScreenState extends State<MainScreen>
                         listenable: _vm,
                         builder: (context, _) => Checkbox(
                           value: enableChasing,
-                          onChanged: _vm.canTradeSymbol(tp.symbol)
+                          onChanged: postOnly && _vm.canTradeSymbol(tp.symbol)
                               ? (v) =>
                                     setState(() => enableChasing = v ?? false)
                               : null,
@@ -4093,6 +4249,8 @@ class _MainScreenState extends State<MainScreen>
         conversion.apiAmount,
         customPrice: customPrice,
         enableChasing: enableChasing,
+        postOnly: postOnly,
+        reduceOnly: reduceOnly,
       );
     }
   }
@@ -4133,57 +4291,73 @@ class _MainScreenState extends State<MainScreen>
     String direction,
     OrderAmountConversion conversion,
   ) async {
+    bool reduceOnly = false;
     final est = conversion.referencePrice;
     final isFut = tp.pair.type == TradingPairType.future;
     final quoteUnit = tp.pair.quoteCurrency;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirm Market Order'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Instrument: ${tp.symbol}'),
-            Text('Side: ${direction.toUpperCase()}'),
-            ..._orderAmountConfirmationLines(conversion),
-            if (est != null)
+      builder: (_) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Confirm Market Order'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Instrument: ${tp.symbol}'),
+              Text('Side: ${direction.toUpperCase()}'),
+              ..._orderAmountConfirmationLines(conversion),
+              if (est != null)
+                Text(
+                  'Est Px: ${est.toStringAsFixed(6)} (${conversion.referenceLabel ?? 'Market'})  •  Est Notional: ${conversion.notional.toStringAsFixed(2)} $quoteUnit',
+                )
+              else
+                const Text('Estimates unavailable • executes at market'),
+              if (isFut && tp.usePercentInput)
+                Text(
+                  'Input: Percent  •  Size: ${(direction.toLowerCase() == 'buy' ? tp.buyPercent : tp.sellPercent).toStringAsFixed(0)}%  •  Lev: ${tp.leverage}x',
+                  style: TextStyle(fontSize: 12, color: _subtleTextColor),
+                ),
+              if (isFut)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Reduce-only（仅减仓）'),
+                  value: reduceOnly,
+                  onChanged: (v) => setState(() => reduceOnly = v!),
+                ),
+              const SizedBox(height: 8),
               Text(
-                'Est Px: ${est.toStringAsFixed(6)} (${conversion.referenceLabel ?? 'Market'})  •  Est Notional: ${conversion.notional.toStringAsFixed(2)} $quoteUnit',
-              )
-            else
-              const Text('Estimates unavailable • executes at market'),
-            if (isFut && tp.usePercentInput)
-              Text(
-                'Input: Percent  •  Size: ${(direction.toLowerCase() == 'buy' ? tp.buyPercent : tp.sellPercent).toStringAsFixed(0)}%  •  Lev: ${tp.leverage}x',
+                '提示: 市价单将以当前可成交最优价格执行，最终成交价可能与估算不同。',
                 style: TextStyle(fontSize: 12, color: _subtleTextColor),
               ),
-            const SizedBox(height: 8),
-            Text(
-              '提示: 市价单将以当前可成交最优价格执行，最终成交价可能与估算不同。',
-              style: TextStyle(fontSize: 12, color: _subtleTextColor),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            ListenableBuilder(
+              listenable: _vm,
+              builder: (context, _) => FilledButton(
+                onPressed: _vm.canTradeSymbol(tp.symbol)
+                    ? () => Navigator.pop(context, true)
+                    : null,
+                child: const Text('Place'),
+              ),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ListenableBuilder(
-            listenable: _vm,
-            builder: (context, _) => FilledButton(
-              onPressed: _vm.canTradeSymbol(tp.symbol)
-                  ? () => Navigator.pop(context, true)
-                  : null,
-              child: const Text('Place'),
-            ),
-          ),
-        ],
       ),
     );
     if (ok == true) {
-      await _vm.placeMarketOrder(tp, direction, conversion.apiAmount);
+      await _vm.placeMarketOrder(
+        tp,
+        direction,
+        conversion.apiAmount,
+        reduceOnly: reduceOnly,
+      );
     }
   }
 
@@ -4545,6 +4719,264 @@ class _MainScreenState extends State<MainScreen>
           newAmount: conversion.apiAmount,
         );
       }
+    }
+  }
+
+  Future<void> _showIncreasePositionDialog(PositionVM position) async {
+    final symbol = position.position.instrumentName;
+    final livePair = _vm.findTradingPairVm(symbol);
+    if (livePair == null || !livePair.pair.isVerified) return;
+    final direction = position.position.direction;
+    final draft = TradingPairVM(livePair.pair)..leverage = livePair.leverage;
+    final amount = TextEditingController(
+      text: draft.pair.minTradeAmount.toString(),
+    );
+    final price = TextEditingController(
+      text: _vm.computeLimitPrice(livePair, direction)?.toString() ?? '',
+    );
+    var mode = 'base';
+    var market = false;
+    var postOnly = true;
+    var chasing = false;
+    var busy = false;
+    String? error;
+    await _vm.ensureAccountMetricsForCurrency(draft.pair.marginCurrency);
+    if (!mounted) {
+      amount.dispose();
+      price.dispose();
+      return;
+    }
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => ListenableBuilder(
+            listenable: _vm,
+            builder: (context, _) {
+              draft.bestBid = livePair.bestBid;
+              draft.bestAsk = livePair.bestAsk;
+              final input = double.tryParse(amount.text.trim());
+              final limitPrice = market
+                  ? null
+                  : double.tryParse(price.text.trim());
+              draft.buyPercent = input ?? 0;
+              draft.sellPercent = input ?? 0;
+              final reference = market
+                  ? (direction == 'buy' ? livePair.bestAsk : livePair.bestBid)
+                  : limitPrice;
+              final percentAmount =
+                  mode == 'percent' &&
+                      input != null &&
+                      isValidPositionPercentage(input)
+                  ? _vm
+                        .computePercentOrderAmountWithMeta(
+                          draft,
+                          direction,
+                          atPrice: reference,
+                        )
+                        .$1
+                  : null;
+              final conversion = convertPositionAmountForApi(
+                pair: draft.pair,
+                inputAmount: mode == 'percent'
+                    ? percentAmount ?? 0
+                    : input ?? 0,
+                inputUnit: mode == 'quote'
+                    ? ManualOrderAmountUnit.quote
+                    : ManualOrderAmountUnit.base,
+                orderType: market
+                    ? ManualOrderType.market
+                    : ManualOrderType.limit,
+                direction: direction,
+                reference: (
+                  price: reference,
+                  label: market ? 'Market' : 'Limit',
+                ),
+              );
+              final canSubmit =
+                  _vm.canTradeSymbol(symbol) &&
+                  conversion.canSubmit &&
+                  (market || (limitPrice != null && limitPrice > 0));
+              return AlertDialog(
+                title: Text('加仓 $symbol · ${direction.toUpperCase()}'),
+                content: SizedBox(
+                  width: 440,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('与当前仓位方向一致，新增敞口；不使用 Reduce-only。'),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Market 市价'),
+                          value: market,
+                          onChanged: busy
+                              ? null
+                              : (v) => setDialogState(() {
+                                  market = v;
+                                  if (market) chasing = false;
+                                }),
+                        ),
+                        if (!market)
+                          TextField(
+                            controller: price,
+                            enabled: !busy,
+                            decoration: const InputDecoration(
+                              labelText: 'Limit price',
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            onChanged: (_) => setDialogState(() {}),
+                          ),
+                        DropdownButtonFormField<String>(
+                          initialValue: mode,
+                          decoration: const InputDecoration(
+                            labelText: 'Amount unit',
+                          ),
+                          items: [
+                            DropdownMenuItem(
+                              value: 'base',
+                              child: Text(draft.pair.baseCurrency),
+                            ),
+                            DropdownMenuItem(
+                              value: 'quote',
+                              child: Text(draft.pair.quoteCurrency),
+                            ),
+                            const DropdownMenuItem(
+                              value: 'percent',
+                              child: Text('可用资金百分比'),
+                            ),
+                          ],
+                          onChanged: busy
+                              ? null
+                              : (v) => setDialogState(() {
+                                  mode = v!;
+                                  amount.text = mode == 'percent'
+                                      ? '10'
+                                      : draft.pair.minTradeAmount.toString();
+                                }),
+                        ),
+                        TextField(
+                          controller: amount,
+                          enabled: !busy,
+                          decoration: InputDecoration(
+                            labelText: mode == 'percent'
+                                ? 'Percent (0–100]'
+                                : 'Amount',
+                          ),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          onChanged: (_) => setDialogState(() {}),
+                        ),
+                        DropdownButtonFormField<int>(
+                          initialValue: draft.leverage,
+                          decoration: const InputDecoration(
+                            labelText: 'Leverage',
+                          ),
+                          items: List.generate(
+                            draft.pair.maxLeverage,
+                            (i) => DropdownMenuItem(
+                              value: i + 1,
+                              child: Text('${i + 1}x'),
+                            ),
+                          ),
+                          onChanged: busy
+                              ? null
+                              : (v) =>
+                                    setDialogState(() => draft.leverage = v!),
+                        ),
+                        if (!market)
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('Post-only'),
+                            value: postOnly,
+                            onChanged: busy
+                                ? null
+                                : (v) => setDialogState(() {
+                                    postOnly = v!;
+                                    if (!postOnly) chasing = false;
+                                  }),
+                          ),
+                        if (!market && postOnly)
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('追价'),
+                            value: chasing,
+                            onChanged: busy
+                                ? null
+                                : (v) => setDialogState(() => chasing = v!),
+                          ),
+                        Text(
+                          'API amount: ${conversion.apiAmount} ${draft.pair.apiAmountCurrency}',
+                        ),
+                        if (conversion.errorMessage != null)
+                          Text(
+                            conversion.errorMessage!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                        if (error != null)
+                          Text(
+                            error!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: !canSubmit || busy
+                        ? null
+                        : () async {
+                            setDialogState(() {
+                              busy = true;
+                              error = null;
+                            });
+                            try {
+                              final order = await _vm.increasePosition(
+                                position,
+                                amount: conversion.apiAmount,
+                                market: market,
+                                price: limitPrice,
+                                postOnly: postOnly,
+                                enableChasing: chasing,
+                                leverage: draft.leverage,
+                              );
+                              if (order == null) {
+                                throw StateError(
+                                  'Order was not placed; see logs',
+                                );
+                              }
+                              if (dialogContext.mounted) {
+                                Navigator.pop(dialogContext);
+                              }
+                            } catch (e) {
+                              if (dialogContext.mounted) {
+                                setDialogState(() {
+                                  busy = false;
+                                  error = e.toString();
+                                });
+                              }
+                            }
+                          },
+                    child: Text(busy ? '提交中…' : '确认加仓'),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+    } finally {
+      amount.dispose();
+      price.dispose();
     }
   }
 

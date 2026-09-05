@@ -36,6 +36,8 @@ class ConfigService {
     return {
       'app': {
         'isTestnet': isTestnet,
+        'androidBackgroundKeepAlive':
+            await SettingsStore.loadAndroidBackgroundKeepAlive(),
         'rememberCredentials': rememberCreds,
         'clientId': creds.clientId,
         'clientSecret': creds.clientSecret,
@@ -116,6 +118,10 @@ class ConfigService {
     final pairs = (settings['pairs'] as Map?)?.cast<String, dynamic>() ?? {};
     final ui = (settings['ui'] as Map?)?.cast<String, dynamic>() ?? {};
 
+    final backgroundKeepAlive = app['androidBackgroundKeepAlive'];
+    if (backgroundKeepAlive is bool) {
+      await SettingsStore.saveAndroidBackgroundKeepAlive(backgroundKeepAlive);
+    }
     final isTestnet = app['isTestnet'];
     if (isTestnet is bool) {
       await SettingsStore.saveIsTestnet(isTestnet);

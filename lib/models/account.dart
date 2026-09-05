@@ -56,7 +56,9 @@ class AccountSummaryCurrency {
 
   bool get hasDisplayableEquity => !_isDisplayZero(equity);
 
-  bool get isDisplayZero => !hasDisplayableEquity;
+  bool get isDisplayZero => balance.abs() < 1e-10;
+
+  bool get hasValuationExposure => equity.abs() >= 1e-10;
 
   factory AccountSummaryCurrency.fromMap(Map<String, dynamic> m) {
     double numValue(dynamic v) => (v as num?)?.toDouble() ?? 0.0;

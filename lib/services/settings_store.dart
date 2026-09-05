@@ -37,6 +37,16 @@ class SettingsStore {
     await sp.setBool(_kIsTestnet, v);
   }
 
+  static Future<bool> loadAndroidBackgroundKeepAlive() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getBool('android_background_keepalive') ?? false;
+  }
+
+  static Future<void> saveAndroidBackgroundKeepAlive(bool value) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool('android_background_keepalive', value);
+  }
+
   static Future<bool> loadRememberCredentials() async {
     final sp = await SharedPreferences.getInstance();
     return sp.getBool(_kRememberCreds) ?? false;

@@ -17,14 +17,8 @@ class MobileConnectionKeepAlive {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
       return;
     }
-    try {
-      await _channel.invokeMethod<void>('start');
-      _started = true;
-    } on MissingPluginException {
-      // Unit tests and unsupported embedders have no native implementation.
-    } on PlatformException {
-      // Connection recovery remains available if the foreground service fails.
-    }
+    await _channel.invokeMethod<void>('start');
+    _started = true;
   }
 
   static Future<void> stop() async {
@@ -33,13 +27,7 @@ class MobileConnectionKeepAlive {
         !_started) {
       return;
     }
+    await _channel.invokeMethod<void>('stop');
     _started = false;
-    try {
-      await _channel.invokeMethod<void>('stop');
-    } on MissingPluginException {
-      // Unit tests and unsupported embedders have no native implementation.
-    } on PlatformException {
-      // The operating system may already have stopped the service.
-    }
   }
 }

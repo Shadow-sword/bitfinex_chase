@@ -24,6 +24,8 @@ class BitfinexApiService {
     });
   }
 
+  int _clientOrderId = 0;
+  final Set<String> _pendingOrderWrites = {};
   bool _paper = true;
   bool _connectionWanted = false;
   bool _opening = false;
@@ -87,6 +89,7 @@ class BitfinexApiService {
     _orders.clear();
     _positions.clear();
     _orderLeverage.clear();
+    _pendingOrderWrites.clear();
     _instruments.clear();
     _maxAmounts.clear();
     _exchangeSymbols.clear();
@@ -200,7 +203,7 @@ class BitfinexApiService {
         'authNonce': nonce,
         'authPayload': payload,
         'authSig': _transport.signature(payload),
-        'filter': ['trading', 'wallet', 'balance'],
+        'filter': ['trading', 'wallet', 'balance', 'notify'],
       }, (event) => event['event'] == 'auth' || event['event'] == 'error');
       if (result['status'] != 'OK') {
         throw const BitfinexApiException('auth', 'Authentication rejected');
@@ -510,7 +513,11 @@ class BitfinexApiService {
       return _price(value);
     }
 
+    final now = DateTime.now().microsecondsSinceEpoch % ((1 << 45) - 1);
+    _clientOrderId = math.max(now, _clientOrderId + 1);
+    final cid = _clientOrderId;
     final body = <String, dynamic>{
+      'cid': cid,
       'type':
           '${pair.type == TradingPairType.spot ? 'EXCHANGE ' : ''}$nativeType',
       'symbol': 't${pair.symbol}',
@@ -529,12 +536,8 @@ class BitfinexApiService {
       if (pair.type == TradingPairType.future) 'lev': leverage,
       'meta': {'protect_selfmatch': 1},
     };
-    final row = _notification(
-      await _transport.privatePost('v2/auth/w/order/submit', body),
-    );
-    final order = _parseOrder(
-      _list(row).first is List ? _list(_list(row).first) : _list(row),
-    );
+    final row = await _writeOrder('on', body, cid: cid);
+    final order = _parseOrder(_list(row));
     _publishOrder(order);
     return order;
   }
@@ -582,11 +585,7 @@ class BitfinexApiService {
       body['lev'] = leverage;
     }
     final updated = _parseOrder(
-      _list(
-        _notification(
-          await _transport.privatePost('v2/auth/w/order/update', body),
-        ),
-      ),
+      _list(await _writeOrder('ou', body, id: orderId)),
     );
     _publishOrder(updated);
     return updated;
@@ -602,15 +601,9 @@ class BitfinexApiService {
     });
     try {
       final order = _parseOrder(
-        _list(
-          _notification(
-            await _transport.privatePost('v2/auth/w/order/cancel', {
-              'id': int.parse(orderId),
-            }),
-          ),
-        ),
+        _list(await _writeOrder('oc', {'id': int.parse(orderId)}, id: orderId)),
       );
-      // The REST notification can contain the pre-cancellation ACTIVE order.
+      // The request notification can contain the pre-cancellation ACTIVE order.
       // Only the terminal order event confirms that it actually left the book.
       _publishOrder(order);
       final known = _orders[orderId];
@@ -619,6 +612,59 @@ class BitfinexApiService {
       return true;
     } finally {
       await subscription.cancel();
+    }
+  }
+
+  Future<dynamic> _writeOrder(
+    String operation,
+    Map<String, dynamic> body, {
+    int? cid,
+    String? id,
+  }) async {
+    _requireAuth();
+    final key = '$operation:${cid ?? id}';
+    if (!_pendingOrderWrites.add(key)) {
+      throw StateError(
+        'An order request is pending or its outcome is unknown; reconnect and reconcile before retrying',
+      );
+    }
+    var outcomeUnknown = false;
+    try {
+      final response = await _transport.requestMessage(
+        [0, operation, null, body],
+        (event) {
+          if (event is! List ||
+              event.length < 3 ||
+              event[0] != 0 ||
+              event[1] != 'n') {
+            return false;
+          }
+          final notification = event[2];
+          if (notification is! List ||
+              notification.length < 8 ||
+              notification[1] != '$operation-req') {
+            return false;
+          }
+          final data = notification[4];
+          if (data is List) {
+            return cid != null
+                ? data.length > 2 && data[2] == cid
+                : data.isNotEmpty && data[0].toString() == id;
+          }
+          if (data is Map) {
+            return cid != null
+                ? data['cid'] == cid
+                : data['id'].toString() == id;
+          }
+          return false;
+        },
+      );
+      return _notification(_list(response)[2]);
+    } on TimeoutException {
+      outcomeUnknown = true;
+      rethrow;
+    } finally {
+      if (!outcomeUnknown) _pendingOrderWrites.remove(key);
     }
   }
 

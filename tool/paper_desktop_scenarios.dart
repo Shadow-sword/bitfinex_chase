@@ -48,7 +48,7 @@ Future<void> main() async {
     final tick = pair.tickSizeAt(book.bestBid);
     final farPrice = (book.bestBid * 0.9 / tick).floor() * tick;
     service.updateSettings(maxSpreadPercent: 0);
-    final order = await service.placePostOnlyOrder(
+    final order = await service.placeLimitOrder(
       symbol,
       'buy',
       pair.minTradeAmount * 2,

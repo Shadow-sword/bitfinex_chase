@@ -468,6 +468,10 @@ class TradingService {
       paper: _requestedIsTestnet,
     ).map((pair) => _normalizeSymbol(pair.symbol)),
     ..._customPairs.map((pair) => _normalizeSymbol(pair.symbol)),
+    ..._activeOrders.values.map(
+      (order) => _normalizeSymbol(order.instrumentName),
+    ),
+    ..._positions.keys,
   };
 
   void removeInstrument(String symbol) {
@@ -1272,6 +1276,10 @@ class TradingService {
   }) async {
     final symbol = _normalizeSymbol(instrumentName);
     if (symbol.isEmpty || !_connected) return;
+    if (!_verifiedInstruments.containsKey(symbol)) {
+      await refreshInstrumentMetadata(symbols: [symbol]);
+      if (!_connected || !_verifiedInstruments.containsKey(symbol)) return;
+    }
     if (force) {
       _autoPublicOrderFeedSymbols.remove(symbol);
       _autoPrivateOrderFeedSymbols.remove(symbol);
@@ -1279,12 +1287,16 @@ class TradingService {
     if (!_autoPublicOrderFeedSymbols.contains(symbol)) {
       try {
         await subscribeToInstrument(symbol);
-      } catch (_) {}
+      } catch (e) {
+        _status('Restore feed failed for $symbol: $e');
+      }
     }
     if (_authenticated && !_autoPrivateOrderFeedSymbols.contains(symbol)) {
       try {
         await subscribeToUserChanges(symbol);
-      } catch (_) {}
+      } catch (e) {
+        _status('Restore feed failed for $symbol: $e');
+      }
     }
   }
 
@@ -1294,63 +1306,45 @@ class TradingService {
       return;
     }
     final generation = _sessionGeneration;
-    final pairs = [
-      ...TradingPair.defaultPairs(paper: _requestedIsTestnet),
-      ..._customPairs,
-    ];
-    final Map<String, Order> latest = {};
-    final Map<String, Set<String>> returnedIdsBySymbol = {};
-    final queriedSuccessfully = <String>{};
-    final queried = <String>{};
-    for (final p in pairs) {
-      final symbol = _normalizeSymbol(p.symbol);
-      if (symbol.isEmpty || !queried.add(symbol)) continue;
-      try {
-        final open = await _api.getOpenOrdersByInstrument(symbol);
-        if (!_isCurrentPrivateOperation(generation)) return;
-        _bumpRiskGeneration(symbol);
-        queriedSuccessfully.add(symbol);
-        final returnedIds = returnedIdsBySymbol.putIfAbsent(
-          symbol,
-          () => <String>{},
-        );
-        for (final o in open) {
-          latest[o.orderId] = o;
-          returnedIds.add(o.orderId);
-        }
-      } catch (_) {
-        if (!_isCurrentPrivateOperation(generation)) return;
+    final before = Map<String, int>.of(_orderUpdateTimestamps);
+    try {
+      final open = await _api.getOpenOrders();
+      if (!_isCurrentPrivateOperation(generation)) return;
+      final ids = open.map((order) => order.orderId).toSet();
+      for (final order in open) {
+        _trackActiveOrder(order);
       }
-    }
-    if (!_isCurrentPrivateOperation(generation)) return;
-    // Emit updates for current open orders
-    for (final o in latest.values) {
-      _trackActiveOrder(o);
-    }
-    // Emit removals for orders no longer present
-    final existingIds = _activeOrders.keys.toList();
-    for (final id in existingIds) {
-      final existing = _activeOrders[id];
-      if (existing == null) continue;
-      final symbol = _normalizeSymbol(existing.instrumentName);
-      if (queriedSuccessfully.contains(symbol) &&
-          !(returnedIdsBySymbol[symbol]?.contains(id) ?? false)) {
-        final ex = _removeActiveOrder(id);
-        if (ex != null) {
-          _emitClosedOrder(ex);
+      for (final id in _activeOrders.keys.toList()) {
+        // An event/new order received while the snapshot was in flight wins.
+        if (ids.contains(id) ||
+            !before.containsKey(id) ||
+            before[id] != _orderUpdateTimestamps[id]) {
+          continue;
         }
+        final removed = _removeActiveOrder(id);
+        if (removed != null) _emitClosedOrder(removed);
       }
+    } catch (e) {
+      if (_isCurrentPrivateOperation(generation)) {
+        _status('Refresh orders failed: $e');
+      }
+      rethrow;
     }
   }
 
-  Future<Order?> placePostOnlyOrder(
+  Future<Order?> placeLimitOrder(
     String instrumentName,
     String direction,
     double amount, {
     double? customPrice,
     bool enableChasing = false,
+    bool postOnly = true,
     int leverage = 1,
+    bool reduceOnly = false,
   }) async {
+    if (enableChasing && !postOnly) {
+      throw ArgumentError('Chasing requires post-only');
+    }
     if (!_authenticated) {
       _status('Please authenticate first');
       return null;
@@ -1401,7 +1395,8 @@ class TradingService {
         amount: normalizedAmount.apiAmount,
         orderType: 'limit',
         price: price,
-        postOnly: true,
+        postOnly: postOnly,
+        reduceOnly: reduceOnly,
       ),
     );
     if (!_isCurrentWrite(generation, instrumentName)) return null;
@@ -1423,6 +1418,7 @@ class TradingService {
     String direction,
     double amount, {
     int leverage = 1,
+    bool reduceOnly = false,
   }) async {
     if (!_authenticated) {
       _status('Please authenticate first');
@@ -1451,7 +1447,7 @@ class TradingService {
         amount: apiAmount,
         orderType: 'market',
         postOnly: false,
-        reduceOnly: false,
+        reduceOnly: reduceOnly,
       ),
     );
     if (!_isCurrentWrite(generation, instrumentName)) return null;
@@ -1511,6 +1507,43 @@ class TradingService {
     }
     if (order != null) _status('Modified order ${order.orderId}');
     return order;
+  }
+
+  Future<Order?> increasePosition(
+    String instrumentName, {
+    required String expectedDirection,
+    required double amount,
+    bool market = false,
+    double? price,
+    bool postOnly = true,
+    bool enableChasing = false,
+    int leverage = 1,
+  }) async {
+    final current = _positions[_normalizeSymbol(instrumentName)];
+    if (current == null ||
+        current.size == 0 ||
+        current.kind == 'margin' ||
+        current.direction != expectedDirection) {
+      throw StateError(
+        'Position has closed or changed direction; reopen the increase dialog',
+      );
+    }
+    return market
+        ? placeMarketOrder(
+            instrumentName,
+            expectedDirection,
+            amount,
+            leverage: leverage,
+          )
+        : placeLimitOrder(
+            instrumentName,
+            expectedDirection,
+            amount,
+            customPrice: price,
+            postOnly: postOnly,
+            enableChasing: enableChasing,
+            leverage: leverage,
+          );
   }
 
   Future<Order?> reversePosition(
@@ -2365,36 +2398,18 @@ class TradingService {
     _orderUpdateTimestamps.clear();
     _closedOrderTombstoneQueue.clear();
     _closedOrderTombstoneTokens.clear();
-    final pairs = [
-      ...TradingPair.defaultPairs(paper: _requestedIsTestnet),
-      ..._customPairs,
-    ];
-    for (final configuredPair in pairs) {
-      final symbol = _normalizeSymbol(configuredPair.symbol);
-      final pair =
-          getTradingPairBySymbol(symbol, _customPairs) ?? configuredPair;
-      try {
-        final open = await _api.getOpenOrdersByInstrument(symbol);
-        if (!_isCurrentPrivateOperation(generation)) return;
-        _bumpRiskGeneration(symbol);
-        for (final o in open) {
-          _trackActiveOrder(o);
-        }
-      } catch (_) {
-        if (!_isCurrentPrivateOperation(generation)) return;
-      }
-      if (pair.type != TradingPairType.spot) {
-        try {
-          final pos = await _api.getPosition(symbol);
-          if (!_isCurrentPrivateOperation(generation)) return;
-          _updatePositionRisk(symbol, pos);
-          if (pos != null) {
-            _emit(_positionController, pos);
-          }
-        } catch (_) {
-          if (!_isCurrentPrivateOperation(generation)) return;
-        }
-      }
+    final snapshots = await Future.wait<dynamic>([
+      _api.getOpenOrders(),
+      _api.getPositions(),
+    ]);
+    if (!_isCurrentPrivateOperation(generation)) return;
+    for (final order in snapshots[0] as List<Order>) {
+      _trackActiveOrder(order);
+    }
+    for (final position in snapshots[1] as List<Position>) {
+      _updatePositionRisk(position.instrumentName, position);
+      _emit(_positionController, position);
+      unawaited(_ensureFeedsForRestoredOrder(position.instrumentName));
     }
   }
 
@@ -2520,7 +2535,8 @@ class TradingService {
         } catch (e) {
           // Surface chase edit failures instead of silently swallowing them;
           // a silent catch here previously hid a rejected edit indefinitely.
-          _status('Chase edit failed for $orderId: $e');
+          setChasingForOrder(orderId, false);
+          _status('Chase stopped after edit failure for $orderId: $e');
         } finally {
           _chasingEditsInFlight.remove(orderId);
         }

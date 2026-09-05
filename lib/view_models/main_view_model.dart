@@ -1,3 +1,4 @@
+import '../services/local_cache_store.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 
@@ -443,6 +444,12 @@ class MainViewModel extends ChangeNotifier {
   bool isConnected = false;
   bool isAuthenticated = false;
   bool isTestnet = true;
+  bool androidBackgroundKeepAlive = false;
+  bool accountInfoFromCache = false;
+  bool withdrawalsFromCache = false;
+  Timer? _marketCacheSaveTimer;
+  int _marketCacheLoadGeneration = 0;
+  final Map<String, Future<double?>> _usdRateRequests = {};
   String clientId = '';
   String clientSecret = '';
   bool rememberCredentials = false;
@@ -672,6 +679,8 @@ class MainViewModel extends ChangeNotifier {
       tradingPairs.addAll(
         TradingPair.defaultPairs(paper: isTestnet).map(TradingPairVM.new),
       );
+      androidBackgroundKeepAlive =
+          await SettingsStore.loadAndroidBackgroundKeepAlive();
       rememberCredentials = await SettingsStore.loadRememberCredentials();
       maxSpreadPercent = await SettingsStore.loadMaxSpreadPercent();
       hideZeroCurrencies = await SettingsStore.loadHideZeroCurrencies();
@@ -686,6 +695,7 @@ class MainViewModel extends ChangeNotifier {
       for (final m in rawPairs) {
         _addCachedCustomPair(TradingPair.fromMap(m));
       }
+      await _restoreMarketCache();
       // load per-pair options expanded state
       final opts = await SettingsStore.loadPairOptionsExpandedMap();
       for (final tp in tradingPairs) {
@@ -725,9 +735,72 @@ class MainViewModel extends ChangeNotifier {
           }
         } catch (_) {}
       }
-    }().catchError((Object _) {
+    }().catchError((Object error) {
+      _onStatus('Settings load failed: $error');
       _markSettingsReady();
     });
+  }
+
+  Future<void> _restoreMarketCache() async {
+    final generation = ++_marketCacheLoadGeneration;
+    final paper = isTestnet;
+    try {
+      final cached = await LocalCacheStore.loadMarket(paper);
+      if (_disposed ||
+          paper != isTestnet ||
+          generation != _marketCacheLoadGeneration) {
+        return;
+      }
+      final bySymbol = {for (final p in cached) p.symbol: p};
+      for (final vm in tradingPairs) {
+        final metadata = bySymbol[vm.symbol];
+        if (metadata == null || vm.pair.isVerified) continue;
+        vm.pair = metadata.withMaxPriceDeviationPercent(
+          vm.pair.maxPriceDeviationPercent,
+        );
+        if (vm.buyAmount == 0) vm.buyAmount = metadata.minTradeAmount;
+        if (vm.sellAmount == 0) vm.sellAmount = metadata.minTradeAmount;
+      }
+      notifyListeners();
+    } catch (e) {
+      _onStatus('Market cache load failed: $e');
+    }
+  }
+
+  void _saveMarketCacheSoon() {
+    _marketCacheSaveTimer?.cancel();
+    final paper = isTestnet;
+    final snapshot = tradingPairs
+        .map((vm) => vm.pair)
+        .where((p) => p.isVerified)
+        .toList();
+    _marketCacheSaveTimer = Timer(const Duration(milliseconds: 500), () {
+      unawaited(
+        LocalCacheStore.saveMarket(paper, snapshot).catchError((Object e) {
+          _onStatus('Market cache save failed: $e');
+        }),
+      );
+    });
+  }
+
+  Future<void> _restoreAccountIdentity() async {
+    final generation = _accountStateGeneration;
+    final key = clientId;
+    final paper = isTestnet;
+    try {
+      final cached = await LocalCacheStore.loadIdentity(paper, key);
+      if (!_isCurrentAccountState(generation) ||
+          key != clientId ||
+          paper != isTestnet ||
+          cached == null) {
+        return;
+      }
+      accountSummaries = cached.value;
+      accountInfoFromCache = true;
+      notifyListeners();
+    } catch (e) {
+      _onStatus('Account cache load failed: $e');
+    }
   }
 
   bool _isAlive(int lifecycleGeneration) =>
@@ -784,7 +857,13 @@ class MainViewModel extends ChangeNotifier {
       }
       isConnected = _service.isConnected;
       if (isConnected) {
-        await MobileConnectionKeepAlive.start();
+        if (androidBackgroundKeepAlive) {
+          try {
+            await MobileConnectionKeepAlive.start();
+          } catch (e) {
+            _onStatus('Android background keepalive failed: $e');
+          }
+        }
         if (!_isCurrentConnectionOperation(
           operationGeneration,
           requestedIsTestnet,
@@ -875,6 +954,7 @@ class MainViewModel extends ChangeNotifier {
     isAuthenticated = ok;
     if (ok) {
       _clearAnnouncementUnreadState(invalidateRequests: true);
+      await _restoreAccountIdentity();
       await _persistCredentialsIfNeeded();
       if (operationGeneration != _authenticationOperationGeneration) return;
       await _subscribeUserChangesAll();
@@ -923,7 +1003,13 @@ class MainViewModel extends ChangeNotifier {
       }
       if (connected) {
         statusMessage = 'Connected';
-        await MobileConnectionKeepAlive.start();
+        if (androidBackgroundKeepAlive) {
+          try {
+            await MobileConnectionKeepAlive.start();
+          } catch (e) {
+            _onStatus('Android background keepalive failed: $e');
+          }
+        }
       } else {
         statusMessage = 'Connection recovery failed';
       }
@@ -959,7 +1045,21 @@ class MainViewModel extends ChangeNotifier {
     try {
       final res = await _service.getAccountSummaries(extended: true);
       if (!_isCurrentAccountState(generation)) return;
+      if (res == null) {
+        accountSummariesError = 'Account refresh failed; see logs';
+        return;
+      }
       accountSummaries = res;
+      accountInfoFromCache = false;
+      {
+        unawaited(
+          LocalCacheStore.saveIdentity(isTestnet, clientId, res).catchError((
+            Object e,
+          ) {
+            _onStatus('Account cache save failed: $e');
+          }),
+        );
+      }
       // Fire-and-forget compute account totals after summaries update
       // ignore: discarded_futures
       _refreshAccountTotals(generation);
@@ -992,40 +1092,28 @@ class MainViewModel extends ChangeNotifier {
     loadingAccountTotals = true;
     notifyListeners();
     try {
-      double totalUsd = 0.0;
-      double totalBtc = 0.0;
-      for (final s in acc.summaries) {
-        if (s.isDisplayZero) continue;
-        final ccy = s.currency.toUpperCase();
-        final usdRate = await _getUsdRateForCurrency(
-          ccy,
-          generation: generation,
-        );
-        if (!_isCurrentAccountState(generation) ||
-            !identical(accountSummaries, acc)) {
-          return;
-        }
-        if (usdRate != null && usdRate > 0) {
-          totalUsd += s.equity * usdRate;
-        }
-        final btcRate = await _getBtcRateForCurrency(
-          ccy,
-          generation: generation,
-        );
-        if (!_isCurrentAccountState(generation) ||
-            !identical(accountSummaries, acc)) {
-          return;
-        }
-        if (btcRate != null && btcRate > 0) {
-          totalBtc += s.equity * btcRate;
-        }
-      }
+      final valuations = await Future.wait(
+        acc.summaries.where((s) => s.hasValuationExposure).map((s) async {
+          final rates = await Future.wait([
+            _getUsdRateForCurrency(s.currency, generation: generation),
+            _getBtcRateForCurrency(s.currency, generation: generation),
+          ]);
+          return (
+            usd: rates[0] == null ? null : s.equity * rates[0]!,
+            btc: rates[1] == null ? null : s.equity * rates[1]!,
+          );
+        }),
+      );
       if (!_isCurrentAccountState(generation) ||
           !identical(accountSummaries, acc)) {
         return;
       }
-      accountTotalUsd = totalUsd;
-      accountTotalBtc = totalBtc;
+      accountTotalUsd = valuations.every((v) => v.usd != null)
+          ? valuations.fold<double>(0, (sum, v) => sum + v.usd!)
+          : null;
+      accountTotalBtc = valuations.every((v) => v.btc != null)
+          ? valuations.fold<double>(0, (sum, v) => sum + v.btc!)
+          : null;
     } catch (_) {
       // keep previous value if any
     } finally {
@@ -1070,7 +1158,23 @@ class MainViewModel extends ChangeNotifier {
   bool _isCurrentRateGeneration(int generation) =>
       !_disposed && generation == _accountStateGeneration;
 
-  Future<double?> _getUsdRateForCurrency(
+  Future<double?> _getUsdRateForCurrency(String currency, {int? generation}) {
+    final current = generation ?? _accountStateGeneration;
+    final key = '$current:${currency.toUpperCase()}';
+    final pending = _usdRateRequests[key];
+    if (pending != null) return pending;
+    late final Future<double?> request;
+    request = _loadUsdRateForCurrency(currency, generation: current)
+        .whenComplete(() {
+          if (identical(_usdRateRequests[key], request)) {
+            _usdRateRequests.remove(key);
+          }
+        });
+    _usdRateRequests[key] = request;
+    return request;
+  }
+
+  Future<double?> _loadUsdRateForCurrency(
     String currency, {
     int? generation,
   }) async {
@@ -1285,12 +1389,15 @@ class MainViewModel extends ChangeNotifier {
     if (loadMore && (loadingWithdrawals || !append || !hasMoreWithdrawals)) {
       return;
     }
+    final cacheKey = clientId;
+    final paper = isTestnet;
     final authenticationGeneration = _authenticationOperationGeneration;
     final requestGeneration = ++_withdrawalRequestGeneration;
     final offset = append ? _withdrawalNextOffset : 0;
     if (!append && withdrawalsCurrency != normalizedCurrency) {
       withdrawals.clear();
       withdrawalsCurrency = normalizedCurrency;
+      withdrawalsFromCache = false;
       hasMoreWithdrawals = false;
       _withdrawalNextOffset = 0;
     }
@@ -1298,6 +1405,28 @@ class MainViewModel extends ChangeNotifier {
     withdrawalsError = null;
     notifyListeners();
     try {
+      if (!append && withdrawals.isEmpty) {
+        try {
+          final cached = await LocalCacheStore.loadWithdrawals(
+            paper,
+            cacheKey,
+            normalizedCurrency,
+            offset,
+          );
+          if (requestGeneration != _withdrawalRequestGeneration ||
+              authenticationGeneration != _authenticationOperationGeneration ||
+              !isAuthenticated) {
+            return;
+          }
+          if (cached != null) {
+            withdrawals.addAll(cached.value);
+            withdrawalsFromCache = true;
+            notifyListeners();
+          }
+        } catch (e) {
+          _onStatus('Withdrawal cache load failed: $e');
+        }
+      }
       final list = await _service.getWithdrawals(
         currency: normalizedCurrency,
         count: _withdrawalPageSize,
@@ -1308,6 +1437,18 @@ class MainViewModel extends ChangeNotifier {
           !isAuthenticated) {
         return;
       }
+      withdrawalsFromCache = false;
+      unawaited(
+        LocalCacheStore.saveWithdrawals(
+          paper,
+          cacheKey,
+          normalizedCurrency,
+          offset,
+          list,
+        ).catchError((Object e) {
+          _onStatus('Withdrawal cache save failed: $e');
+        }),
+      );
       if (append) {
         final loadedIds = withdrawals
             .map((withdrawal) => withdrawal.id)
@@ -1624,13 +1765,17 @@ class MainViewModel extends ChangeNotifier {
     double amount, {
     double? customPrice,
     bool enableChasing = false,
+    bool postOnly = true,
+    bool reduceOnly = false,
   }) async {
-    await _service.placePostOnlyOrder(
+    await _service.placeLimitOrder(
       tp.symbol,
       direction,
       amount,
       customPrice: customPrice,
       enableChasing: enableChasing,
+      postOnly: postOnly,
+      reduceOnly: reduceOnly,
       leverage: tp.leverage,
     );
   }
@@ -1638,13 +1783,15 @@ class MainViewModel extends ChangeNotifier {
   Future<void> placeMarketOrder(
     TradingPairVM tp,
     String direction,
-    double amount,
-  ) async {
+    double amount, {
+    bool reduceOnly = false,
+  }) async {
     await _service.placeMarketOrder(
       tp.symbol,
       direction,
       amount,
       leverage: tp.leverage,
+      reduceOnly: reduceOnly,
     );
   }
 
@@ -1691,6 +1838,25 @@ class MainViewModel extends ChangeNotifier {
     _service.setChasingForOrder(o.order.orderId, enable);
     notifyListeners();
   }
+
+  Future<Order?> increasePosition(
+    PositionVM position, {
+    required double amount,
+    bool market = false,
+    double? price,
+    bool postOnly = true,
+    bool enableChasing = false,
+    int leverage = 1,
+  }) => _service.increasePosition(
+    position.position.instrumentName,
+    expectedDirection: position.position.direction,
+    amount: amount,
+    market: market,
+    price: price,
+    postOnly: postOnly,
+    enableChasing: enableChasing,
+    leverage: leverage,
+  );
 
   Future<void> closePosition(
     PositionVM p, {
@@ -2427,6 +2593,7 @@ class MainViewModel extends ChangeNotifier {
     if (isConnecting) return;
     if (isTestnet == v) return;
     if (isConnected) await disconnect();
+    _marketCacheSaveTimer?.cancel();
     isTestnet = v;
     tradingPairs.removeWhere(
       (tp) => !customTradingPairs.any((p) => p.symbol == tp.pair.symbol),
@@ -2438,6 +2605,24 @@ class MainViewModel extends ChangeNotifier {
     }
     notifyListeners();
     await SettingsStore.saveIsTestnet(v);
+    await _restoreMarketCache();
+  }
+
+  Future<void> setAndroidBackgroundKeepAlive(bool enabled) async {
+    if (enabled == androidBackgroundKeepAlive) return;
+    try {
+      if (enabled && isConnected) {
+        await MobileConnectionKeepAlive.start();
+      } else if (!enabled) {
+        await MobileConnectionKeepAlive.stop();
+      }
+      await SettingsStore.saveAndroidBackgroundKeepAlive(enabled);
+      androidBackgroundKeepAlive = enabled;
+      notifyListeners();
+    } catch (e) {
+      _onStatus('Android background keepalive failed: $e');
+      rethrow;
+    }
   }
 
   Future<void> setRememberCredentials(bool v) async {
@@ -2894,7 +3079,7 @@ class MainViewModel extends ChangeNotifier {
   void _onInstrumentMetadata(TradingPair pair) {
     if (_disposed) return;
     final normalized = _normalizeSymbol(pair.symbol);
-    if (!_hasConfiguredSymbol(normalized)) return;
+    if (!_allowsRuntimeSymbol(normalized)) return;
     final index = tradingPairs.indexWhere(
       (vm) => _normalizeSymbol(vm.symbol) == normalized,
     );
@@ -2918,6 +3103,7 @@ class MainViewModel extends ChangeNotifier {
       _computeTradeHistoryPositions();
       _refreshTradeHistorySelectionSummary();
     }
+    if (pair.isVerified) _saveMarketCacheSoon();
     notifyListeners();
   }
 
@@ -3016,6 +3202,7 @@ class MainViewModel extends ChangeNotifier {
   void _clearAccountState() {
     _accountStateGeneration++;
     accountSummaries = null;
+    accountInfoFromCache = false;
     accountSummariesError = null;
     accountTotalUsd = null;
     accountTotalBtc = null;
@@ -3026,6 +3213,7 @@ class MainViewModel extends ChangeNotifier {
     _accountMetrics.clear();
     _accountMetricLoadGenerations.clear();
     _usdRates.clear();
+    _usdRateRequests.clear();
     _btcRates.clear();
     _btcRateRequests.clear();
     _usdRateLoading.clear();
@@ -3400,6 +3588,7 @@ class MainViewModel extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _marketCacheSaveTimer?.cancel();
     _lifecycleGeneration++;
     _connectionOperationGeneration++;
     _authenticationOperationGeneration++;

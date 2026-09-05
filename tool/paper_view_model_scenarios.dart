@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:bitfinex_chase/services/bitfinex_transport.dart';
 import 'package:bitfinex_chase/services/bitfinex_api_service.dart';
 import 'package:bitfinex_chase/services/trading_service.dart';
+import 'package:bitfinex_chase/services/local_cache_store.dart';
+import 'package:bitfinex_chase/services/config_service.dart';
 import 'package:bitfinex_chase/view_models/main_view_model.dart';
 
 Future<void> main() async {
@@ -65,6 +67,43 @@ Future<void> main() async {
     final position = vm.positions.singleWhere(
       (p) => p.position.instrumentName == symbol,
     );
+    final increased = await vm.increasePosition(
+      position,
+      amount: pair.pair.minTradeAmount,
+      market: true,
+      leverage: pair.leverage,
+    );
+    if (increased == null) throw StateError('Increase order was not placed');
+    await until(
+      () => vm.positions.any(
+        (p) =>
+            p.position.instrumentName == symbol &&
+            (p.position.size - pair.pair.minTradeAmount * 3).abs() < 1e-10,
+      ),
+    );
+    stdout.writeln(
+      'PASS same-direction increase adds exposure without reduce-only',
+    );
+    // Restore the original scenario size before the existing partial/reversal checks.
+    await vm.closePositionMarket(
+      vm.positions.singleWhere((p) => p.position.instrumentName == symbol),
+      nativeApiAmount: pair.pair.minTradeAmount,
+    );
+    await until(
+      () => vm.positions.any(
+        (p) =>
+            p.position.instrumentName == symbol &&
+            (p.position.size - amount).abs() < 1e-10,
+      ),
+    );
+    final wasKeepAlive = vm.androidBackgroundKeepAlive;
+    await vm.setAndroidBackgroundKeepAlive(!wasKeepAlive);
+    final config = await ConfigService.buildPlainSettings();
+    if ((config['app'] as Map)['androidBackgroundKeepAlive'] != !wasKeepAlive) {
+      throw StateError('Keepalive config export mismatch');
+    }
+    await vm.setAndroidBackgroundKeepAlive(wasKeepAlive);
+    stdout.writeln('PASS optional keepalive setting persists and exports');
     final tick = pair.pair.tickSizeAt(pair.bestBid);
     final stop = await vm.addProtectionOrder(
       position,
@@ -113,6 +152,29 @@ Future<void> main() async {
     if (vm.accountSummaries?.type != 'Paper Trading') {
       throw StateError('Account view did not load');
     }
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    final cachedPairs = await LocalCacheStore.loadMarket(true);
+    if (!cachedPairs.any((p) => p.symbol == symbol) ||
+        cachedPairs.any((p) => p.isVerified)) {
+      throw StateError('Cached metadata must remain unverified');
+    }
+    final identity = await LocalCacheStore.loadIdentity(true, vm.clientId);
+    if (identity == null ||
+        identity.value.id != vm.accountSummaries!.id ||
+        identity.value.summaries.isNotEmpty) {
+      throw StateError('Identity cache must exclude balances');
+    }
+    await vm.loadWithdrawals(currency: 'TESTUSD');
+    final cachedWithdrawals = await LocalCacheStore.loadWithdrawals(
+      true,
+      vm.clientId,
+      'TESTUSD',
+      0,
+    );
+    if (cachedWithdrawals == null) {
+      throw StateError('Withdrawal history was not cached');
+    }
+    stdout.writeln('PASS metadata, identity-only and withdrawal caches');
     await vm.disconnect();
     if (vm.isAuthenticated || vm.positions.isNotEmpty) {
       throw StateError('View model retained private state');

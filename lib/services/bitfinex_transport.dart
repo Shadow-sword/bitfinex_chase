@@ -21,7 +21,7 @@ class BitfinexTransport {
   StreamSubscription<dynamic>? _subscription;
   final messages = StreamController<dynamic>.broadcast();
   final disconnected = StreamController<String>.broadcast();
-  final List<_PendingEvent> _pending = [];
+  final List<_PendingRequest> _pending = [];
   Future<void> _restQueue = Future<void>.value();
   Timer? _heartbeat;
   DateTime _lastMessage = DateTime.now();
@@ -155,13 +155,11 @@ class BitfinexTransport {
               );
             }
           }
-          if (event is Map) {
-            for (final pending in List<_PendingEvent>.of(_pending)) {
-              if (pending.matches(event)) {
-                _pending.remove(pending);
-                pending.result.complete(Map<String, dynamic>.from(event));
-                break;
-              }
+          for (final pending in List<_PendingRequest>.of(_pending)) {
+            if (pending.matches(event)) {
+              _pending.remove(pending);
+              pending.result.complete(event);
+              break;
             }
           }
           messages.add(event);
@@ -210,20 +208,29 @@ class BitfinexTransport {
     Map<String, dynamic> payload,
     bool Function(Map<dynamic, dynamic>) matches,
   ) async {
-    final pending = _PendingEvent(matches);
+    final raw = await requestMessage(
+      payload,
+      (event) => event is Map && matches(event),
+    );
+    final event = Map<String, dynamic>.from(raw as Map);
+    if (event['event'] == 'error' || event['status'] == 'FAILED') {
+      throw BitfinexApiException(
+        event['code'] ?? 'error',
+        event['msg']?.toString() ?? 'Request rejected',
+      );
+    }
+    return event;
+  }
+
+  Future<dynamic> requestMessage(
+    Object payload,
+    bool Function(dynamic) matches,
+  ) async {
+    final pending = _PendingRequest(matches);
     _pending.add(pending);
     try {
       send(payload);
-      final event = await pending.result.future.timeout(
-        const Duration(seconds: 15),
-      );
-      if (event['event'] == 'error' || event['status'] == 'FAILED') {
-        throw BitfinexApiException(
-          event['code'] ?? 'error',
-          event['msg']?.toString() ?? 'Request rejected',
-        );
-      }
-      return event;
+      return await pending.result.future.timeout(const Duration(seconds: 15));
     } finally {
       _pending.remove(pending);
     }
@@ -261,8 +268,8 @@ class BitfinexTransport {
   }
 }
 
-class _PendingEvent {
-  final bool Function(Map<dynamic, dynamic>) matches;
-  final result = Completer<Map<String, dynamic>>();
-  _PendingEvent(this.matches);
+class _PendingRequest {
+  final bool Function(dynamic) matches;
+  final result = Completer<dynamic>();
+  _PendingRequest(this.matches);
 }
