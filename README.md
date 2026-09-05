@@ -70,7 +70,7 @@ dart run tool/paper_smoke.dart --trade
 | `ANDROID_KEY_BASE64` | 签名 `.jks` / keystore 文件的完整 Base64 内容 |
 | `ANDROID_KEY_PASSWORD` | keystore 和该密钥的密码；沿用原项目约定，两者必须相同 |
 
-`build-mobile.yml` 在推送 `main` 时分别构建 arm64-v8a、armeabi-v7a、x86_64 的签名 Release APK，并上传各自的 workflow artifact。Flutter Release 不支持原 Tauri workflow 中的 32 位 x86，因此没有该构建项。缺少签名 Secret 时 Android job 明确失败，不生成替代的未签名 APK。
+`build-mobile.yml` 在推送 `main` 时分别构建 arm64-v8a、armeabi-v7a、x86_64 的签名 Release APK，并上传各自的 workflow artifact。Android CI 固定使用已验证的 Flutter 3.35.5，与项目的 Gradle 8.12 配套。Flutter Release 不支持原 Tauri workflow 中的 32 位 x86，因此没有该构建项。缺少签名 Secret 时 Android job 明确失败，不生成替代的未签名 APK。
 
 iOS job 使用 `--no-codesign` 进行编译检查，不生成可安装的签名 IPA，不需要 Apple 证书或相关 Secret。桌面 workflow 覆盖 Windows、macOS、Linux，不需要自定义 Secret，分别上传便携 Windows 应用、未公证的 macOS DMG 和保留执行权限的 Linux tar.gz。Bitfinex `API_KEY` / `API_SECRET` 仅用于本地验收，不要配置为构建 Secret。
 
