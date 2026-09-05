@@ -2305,6 +2305,9 @@ class TradingService {
     }
   }
 
+  Future<Map<String, List<String>>> getWithdrawalMethods() =>
+      _api.getWithdrawalMethods();
+
   Future<bool> withdraw({
     required String currency,
     required String address,

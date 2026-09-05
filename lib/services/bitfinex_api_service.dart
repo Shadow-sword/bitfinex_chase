@@ -985,6 +985,27 @@ class BitfinexApiService {
     return withdrawals.values.skip(offset).take(count).toList();
   }
 
+  Future<Map<String, List<String>>> getWithdrawalMethods() async {
+    final response = _list(
+      await _transport.publicGet('v2/conf/pub:map:tx:method'),
+    );
+    final result = <String, List<String>>{};
+    for (final raw in _list(response.single)) {
+      final row = _list(raw);
+      final currency = (row[0] as String).toUpperCase();
+      final methods =
+          _list(
+              row[1],
+            ).map((method) => (method as String).toLowerCase()).toSet().toList()
+            ..sort();
+      if (methods.isNotEmpty) result[currency] = methods;
+    }
+    if (result.isEmpty) {
+      throw const FormatException('No withdrawal methods available');
+    }
+    return result;
+  }
+
   Future<Map<String, dynamic>?> withdraw({
     required String currency,
     required String address,
@@ -1000,16 +1021,9 @@ class BitfinexApiService {
     if (!amount.isFinite || amount <= 0 || address.trim().isEmpty) {
       throw ArgumentError('Invalid withdrawal');
     }
-    final methods = _list(
-      await _transport.publicGet('v2/conf/pub:map:tx:method'),
-    );
-    final mapping = _list(
-      methods.single,
-    ).map(_list).where((r) => r[0] == currency.toUpperCase());
-    if (mapping.isEmpty ||
-        !_list(
-          mapping.first[1],
-        ).any((m) => m.toString().toLowerCase() == method.toLowerCase())) {
+    final methods = await getWithdrawalMethods();
+    if (!(methods[currency.toUpperCase()]?.contains(method.toLowerCase()) ??
+        false)) {
       throw ArgumentError('Withdrawal method does not match currency');
     }
     final data = _notification(

@@ -79,7 +79,10 @@ class _MainScreenState extends State<MainScreen>
       TextEditingController();
   String _withdrawCurrency = 'BTC';
   final _withdrawAddressController = TextEditingController();
-  final _withdrawMethodController = TextEditingController();
+  String? _withdrawMethod;
+  Map<String, List<String>> _withdrawMethods = {};
+  bool _loadingWithdrawMethods = false;
+  String? _withdrawMethodsError;
   final _withdrawTagController = TextEditingController();
   // Percent sizing buffer input
   final TextEditingController _percentBufferController =
@@ -166,7 +169,6 @@ class _MainScreenState extends State<MainScreen>
     }
     _withdrawAmountController.dispose();
     _withdrawAddressController.dispose();
-    _withdrawMethodController.dispose();
     _withdrawTagController.dispose();
     _percentBufferController.dispose();
     _percentBufferFocus.dispose();
@@ -1147,6 +1149,24 @@ class _MainScreenState extends State<MainScreen>
     );
   }
 
+  Future<void> _loadWithdrawMethods() async {
+    if (_loadingWithdrawMethods) return;
+    setState(() {
+      _loadingWithdrawMethods = true;
+      _withdrawMethodsError = null;
+    });
+    try {
+      final methods = await _service.getWithdrawalMethods();
+      if (!mounted) return;
+      setState(() => _withdrawMethods = methods);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _withdrawMethodsError = '获取提款币种和网络失败: $e');
+    } finally {
+      if (mounted) setState(() => _loadingWithdrawMethods = false);
+    }
+  }
+
   Widget _buildWithdrawalPanel() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1155,6 +1175,9 @@ class _MainScreenState extends State<MainScreen>
         expanded: _withdrawPanelExpanded,
         onToggle: () {
           setState(() => _withdrawPanelExpanded = !_withdrawPanelExpanded);
+          if (_withdrawPanelExpanded && _withdrawMethods.isEmpty) {
+            _loadWithdrawMethods();
+          }
           if (_withdrawPanelExpanded && _vm.isAuthenticated) {
             _vm.loadWithdrawals(currency: _withdrawCurrency);
           }
@@ -1167,7 +1190,17 @@ class _MainScreenState extends State<MainScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (_vm.isTestnet) const Text('Paper 模拟资产不可提现。'),
-              const Text('Bitfinex 不提供等价地址簿接口，请填写收款地址和对应网络。来源：Exchange 钱包。'),
+              const Text('请填写收款地址并选择对应网络。来源：Exchange 钱包。'),
+              if (_loadingWithdrawMethods) const LinearProgressIndicator(),
+              if (_withdrawMethodsError != null) ...[
+                Text(_withdrawMethodsError!),
+                TextButton(
+                  onPressed: _loadingWithdrawMethods
+                      ? null
+                      : _loadWithdrawMethods,
+                  child: const Text('重新加载'),
+                ),
+              ],
               const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
@@ -1175,13 +1208,39 @@ class _MainScreenState extends State<MainScreen>
                 children: [
                   SizedBox(
                     width: 130,
-                    child: TextFormField(
-                      initialValue: _withdrawCurrency,
-                      decoration: const InputDecoration(
-                        labelText: 'Currency（如 BTC / UST）',
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey(
+                        'withdraw-currency-$_withdrawCurrency-${_withdrawMethods.length}',
                       ),
-                      onChanged: (v) =>
-                          _withdrawCurrency = v.trim().toUpperCase(),
+                      initialValue:
+                          _withdrawMethods.containsKey(_withdrawCurrency)
+                          ? _withdrawCurrency
+                          : null,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Currency'),
+                      items: (_withdrawMethods.keys.toList()..sort())
+                          .map(
+                            (currency) => DropdownMenuItem(
+                              value: currency,
+                              child: Text(currency),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: _loadingWithdrawMethods
+                          ? null
+                          : (currency) {
+                              if (currency == null ||
+                                  currency == _withdrawCurrency) {
+                                return;
+                              }
+                              setState(() {
+                                _withdrawCurrency = currency;
+                                _withdrawMethod = null;
+                              });
+                              if (_vm.isAuthenticated) {
+                                _vm.loadWithdrawals(currency: currency);
+                              }
+                            },
                     ),
                   ),
                   SizedBox(
@@ -1195,11 +1254,28 @@ class _MainScreenState extends State<MainScreen>
                   ),
                   SizedBox(
                     width: 230,
-                    child: TextField(
-                      controller: _withdrawMethodController,
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey('withdraw-method-$_withdrawCurrency'),
+                      initialValue: _withdrawMethod,
+                      isExpanded: true,
                       decoration: const InputDecoration(
-                        labelText: 'Method / network（如 bitcoin）',
+                        labelText: 'Method / network',
                       ),
+                      items:
+                          (_withdrawMethods[_withdrawCurrency] ??
+                                  const <String>[])
+                              .map(
+                                (method) => DropdownMenuItem(
+                                  value: method,
+                                  child: Text(method),
+                                ),
+                              )
+                              .toList(),
+                      onChanged: _loadingWithdrawMethods
+                          ? null
+                          : (method) {
+                              setState(() => _withdrawMethod = method);
+                            },
                     ),
                   ),
                   SizedBox(
@@ -1222,7 +1298,11 @@ class _MainScreenState extends State<MainScreen>
                     ),
                   ),
                   FilledButton(
-                    onPressed: _vm.isAuthenticated && !_vm.isTestnet
+                    onPressed:
+                        _vm.isAuthenticated &&
+                            !_vm.isTestnet &&
+                            !_loadingWithdrawMethods &&
+                            _withdrawMethod != null
                         ? _confirmAndWithdraw
                         : null,
                     child: const Text('Withdraw'),
@@ -1274,9 +1354,9 @@ class _MainScreenState extends State<MainScreen>
 
   Future<void> _confirmAndWithdraw() async {
     final addr = _withdrawAddressController.text.trim();
-    final method = _withdrawMethodController.text.trim();
+    final method = _withdrawMethod;
     final amount = double.tryParse(_withdrawAmountController.text.trim());
-    if (addr.isEmpty || method.isEmpty) {
+    if (addr.isEmpty || method == null || method.isEmpty) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请填写提款地址和网络')));
