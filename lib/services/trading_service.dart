@@ -11,6 +11,7 @@ import '../utils/decimal_utils.dart';
 import '../utils/order_amount_conversion.dart';
 import '../models/address_book.dart';
 import '../models/withdrawal.dart';
+import '../models/wallet_transfer.dart';
 import 'notification_service.dart';
 
 class TradingService {
@@ -2177,6 +2178,55 @@ class TradingService {
     } catch (e) {
       _status('Load account summaries failed: $e');
       return null;
+    }
+  }
+
+  int get walletSessionGeneration => _sessionGeneration;
+
+  bool isCurrentWalletSession(int generation) =>
+      _isCurrentPrivateOperation(generation);
+
+  Future<List<TransferBalance>> getTransferBalances({
+    required int sessionGeneration,
+  }) async {
+    if (!_isCurrentPrivateOperation(sessionGeneration)) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    final balances = await _api.getTransferBalances();
+    if (!_isCurrentPrivateOperation(sessionGeneration)) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    return balances;
+  }
+
+  bool _transferringBetweenWallets = false;
+
+  Future<void> transferBetweenWallets({
+    required int sessionGeneration,
+    required TransferWallet from,
+    required TransferWallet to,
+    required String currency,
+    required String amount,
+  }) async {
+    if (!_isCurrentPrivateOperation(sessionGeneration)) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    if (_transferringBetweenWallets) throw StateError('已有钱包划转正在处理');
+    _transferringBetweenWallets = true;
+    try {
+      await _api.transferBetweenWallets(
+        from: from,
+        to: to,
+        currency: currency,
+        amount: amount,
+      );
+      if (_isCurrentPrivateOperation(sessionGeneration)) {
+        _status(
+          'Wallet transfer succeeded: $amount $currency, ${from.label} → ${to.label}',
+        );
+      }
+    } finally {
+      _transferringBetweenWallets = false;
     }
   }
 

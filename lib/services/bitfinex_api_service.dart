@@ -7,6 +7,8 @@ import '../models/address_book.dart';
 import '../models/announcement.dart';
 import '../models/trading_pair.dart';
 import '../models/withdrawal.dart';
+import '../models/wallet_transfer.dart';
+import 'package:decimal/decimal.dart';
 import 'bitfinex_transport.dart';
 
 /// Native Bitfinex v2 REST and WebSocket adapter. Symbols in the application
@@ -763,6 +765,72 @@ class BitfinexApiService {
   Future<List<dynamic>> getWallets() async {
     _requireAuth();
     return _list(await _transport.privatePost('v2/auth/r/wallets'));
+  }
+
+  Future<List<TransferBalance>> getTransferBalances() async {
+    final balances = <TransferBalance>[];
+    for (final raw in await getWallets()) {
+      final row = _list(raw);
+      if (row.length < 5) {
+        throw const FormatException('Invalid wallet balance');
+      }
+      final currency = row[1] as String;
+      final wallet = TransferWallet.fromApi(row[0] as String, currency);
+      if (wallet == null) continue;
+      balances.add(
+        TransferBalance(
+          wallet: wallet,
+          currency: currency,
+          balance: Decimal.parse(row[2].toString()),
+          available: row[4] == null ? null : Decimal.parse(row[4].toString()),
+        ),
+      );
+    }
+    return balances;
+  }
+
+  Future<void> transferBetweenWallets({
+    required TransferWallet from,
+    required TransferWallet to,
+    required String currency,
+    required String amount,
+  }) async {
+    _requireAuth();
+    final generation = _generation;
+    if (from == to) throw ArgumentError('请选择不同的转出和转入钱包');
+    final quantity = parseTransferAmount(amount);
+    if (currency != from.currencyFor(currency)) {
+      throw ArgumentError('币种与转出钱包不匹配');
+    }
+    final destinationCurrency = to.currencyFor(currency);
+    if (from == TransferWallet.derivatives || to == TransferWallet.derivatives) {
+      final currencies = _list(
+        _list(await _transport.publicGet('v2/conf/pub:list:currency')).single,
+      );
+      if (!currencies.contains(currency) ||
+          !currencies.contains(destinationCurrency)) {
+        throw ArgumentError('该币种不支持所选钱包间划转');
+      }
+    }
+    final balances = await getTransferBalances();
+    final source = balances.where(
+      (b) => b.wallet == from && b.currency == currency,
+    );
+    if (source.length != 1) throw StateError('未找到唯一的转出钱包余额');
+    final available = source.single.available;
+    if (available == null) throw StateError('可用余额尚未计算，请刷新后再试');
+    if (quantity > available) throw StateError('划转数量超过钱包可用余额');
+    _requireAuth();
+    if (generation != _generation) throw StateError('账号会话已变更，请重新操作');
+    _notification(
+      await _transport.privatePost('v2/auth/w/transfer', {
+        'from': from.apiName,
+        'to': to.apiName,
+        'currency': currency,
+        'currency_to': destinationCurrency,
+        'amount': quantity.toString(),
+      }),
+    );
   }
 
   Future<Map<String, dynamic>?> getAccountSummary({

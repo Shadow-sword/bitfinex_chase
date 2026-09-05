@@ -7,6 +7,7 @@ import '../services/trading_service.dart';
 import '../view_models/main_view_model.dart';
 import '../models/trading_pair.dart';
 import '../models/withdrawal.dart';
+import 'wallet_transfer_panel.dart';
 import '../services/settings_store.dart';
 import '../services/config_service.dart';
 import '../utils/decimal_utils.dart';
@@ -1131,23 +1132,37 @@ class _MainScreenState extends State<MainScreen>
                   );
                 }),
                 const SizedBox(height: 12),
+                if (_vm.isAuthenticated) _buildWalletTransferPanel(),
                 _buildWithdrawalPanel(),
               ],
             ),
           )
         else
           Expanded(
-            child: Center(
-              child: Text(
-                _vm.isAuthenticated
-                    ? 'No data. Tap Refresh.'
-                    : 'Authenticate to view account.',
-              ),
+            child: ListView(
+              children: [
+                if (_vm.isAuthenticated) _buildWalletTransferPanel(),
+                Text(
+                  _vm.isAuthenticated
+                      ? 'No data. Tap Refresh.'
+                      : 'Authenticate to view account.',
+                ),
+              ],
             ),
           ),
       ],
     );
   }
+
+  Widget _buildWalletTransferPanel() => WalletTransferPanel(
+    key: ValueKey(_vm.accountSessionGeneration),
+    service: _service,
+    accountLabel:
+        '${_vm.isTestnet ? 'Paper' : 'Live'} · '
+        '${_vm.accountSummaries?.username ?? '当前账号'}'
+        '${_vm.accountSummaries == null ? '' : ' · ID ${_vm.accountSummaries!.id}'}',
+    onTransferred: _vm.refreshAccountSummaries,
+  );
 
   Future<void> _loadWithdrawMethods() async {
     if (_loadingWithdrawMethods) return;

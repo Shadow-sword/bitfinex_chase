@@ -647,6 +647,7 @@ class MainViewModel extends ChangeNotifier {
   StreamSubscription<TradingPair>? _instrumentSub;
   int _announcementStateGeneration = 0;
   int _accountStateGeneration = 0;
+  int get accountSessionGeneration => _accountStateGeneration;
   int _nextSubscriptionIntentGeneration = 0;
   final Map<String, int> _subscriptionIntentGenerations = {};
   final Set<String> _desiredSubscribedSymbols = {};

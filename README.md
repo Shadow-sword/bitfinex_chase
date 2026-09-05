@@ -25,6 +25,7 @@ flutter run -d macos
 - 原生 Stop、Stop Limit、Trailing Stop；Margin 和合约保护订单使用 reduce-only。
 - 成交历史按日期查询、快捷日期范围、日分组、订单聚合、成交选择与统计；分页按成交 ID 去重。
 - 钱包余额、可用/冻结金额和并发资产折算；隐藏零余额按 balance 判断；提现与提现历史。提现前需填写 Bitfinex method/network、地址和可选 Memo，用户确认后才提交。Paper 不提供实际提现。
+- 账户页提供同账号钱包划转：Exchange、Margin、Funding、Capital Raise、Derivatives。按转出钱包选择币种，支持全部可用余额和提交前确认；提交前复核余额，成功后刷新钱包及账户。Derivatives 自动映射对应 F0 币种，实际币种资格与账号权限由 Bitfinex 校验。
 - 环境隔离的交易对元数据缓存，以及认证后的账户信息/提款记录缓存；缓存不会恢复实时价格、余额或交易权限。
 - 设置持久化、可选记住凭证、配置导入导出及加密导出、主题、桌面窗口恢复、成交通知。
 
@@ -60,6 +61,8 @@ dart run tool/paper_smoke.dart --trade
 `dart run tool/paper_derivatives_smoke.dart` 验证合约下单、杠杆改单、三类止损、部分平仓、反手和清仓。余额不足时可显式加 `--fund`，用 0.0004 TESTBTC 对应的模拟美元兑换并划转模拟保证金。
 
 `dart run tool/paper_margin_smoke.dart` 验证同一交易对的 Exchange/Margin 隔离、Post-only 改单及越价取消、Margin 开多/加仓/减仓/反手做空/平仓、保护单与历史。要求 Paper 账户没有现存挂单或仓位；必要时临时从 Exchange 划转 TESTUSD，使保证金可用余额达到 25，结束后清理本轮订单/仓位并返还临时抵押资金（扣除交易损耗）。
+
+`dart run tool/paper_wallet_transfer_scenarios.dart` 使用 `.env` 进行真实 Paper 钱包划转验收。要求没有挂单或仓位，Exchange 中至少有 0.03 TESTUSD、Derivatives 中至少有 0.04 TESTUSDTF0；逐笔划转 0.01，校验两端余额，最后逆序归还。资金写入间隔至少 30 秒以避开 Paper 的结算检查，不自动重试；任何服务端拒绝均明确输出并以非零状态退出。可用重复的 `--route=exchange:margin`、`--route=derivatives:margin` 等参数仅验证指定路径，钱包名使用 `exchange`、`margin`、`funding`、`capitalRaise`、`derivatives`。Paper 的 Capital Raise 可能拒绝测试币，不能将拒绝结果视为成功划转；失败后先核对余额再重新执行。
 
 `tool/paper_view_model_scenarios.dart` 验证界面模型的认证、百分比下单、保护单、平仓、反手、历史、账户以及自动断线重连。它同样只读取进程环境中的验收凭证。
 
@@ -104,4 +107,4 @@ iOS job 使用 `--no-codesign` 进行编译检查，不生成可安装的签名 
 - [Order book](https://docs.bitfinex.com/reference/ws-public-books)
 - [Submit order](https://docs.bitfinex.com/reference/rest-auth-submit-order)、[Update order](https://docs.bitfinex.com/reference/rest-auth-update-order)
 - [User info / Paper flag](https://docs.bitfinex.com/reference/rest-auth-info-user)
-- [Wallets](https://docs.bitfinex.com/reference/rest-auth-wallets)、[Trades](https://docs.bitfinex.com/reference/rest-auth-trades)
+- [Wallets](https://docs.bitfinex.com/reference/rest-auth-wallets)、[Transfer Between Wallets](https://docs.bitfinex.com/reference/rest-auth-transfer)、[Trades](https://docs.bitfinex.com/reference/rest-auth-trades)
