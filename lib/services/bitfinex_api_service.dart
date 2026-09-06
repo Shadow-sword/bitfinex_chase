@@ -1095,13 +1095,14 @@ class BitfinexApiService {
         false)) {
       throw ArgumentError('Withdrawal method does not match currency');
     }
+    final paymentId = destinationTag?.trim();
     final data = _notification(
       await _transport.privatePost('v2/auth/w/withdraw', {
         'wallet': 'exchange',
         'method': method.toLowerCase(),
         'amount': _amount(amount),
         'address': address.trim(),
-        if (destinationTag != null) 'payment_id': destinationTag,
+        if (paymentId != null && paymentId.isNotEmpty) 'payment_id': paymentId,
       }),
     );
     return {'id': _list(data)[0]};
