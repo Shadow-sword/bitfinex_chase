@@ -1057,21 +1057,22 @@ class BitfinexApiService {
     final response = _list(
       await _transport.publicGet('v2/conf/pub:map:tx:method'),
     );
-    final result = <String, List<String>>{};
+    final methodsByCurrency = <String, Set<String>>{};
     for (final raw in _list(response.single)) {
       final row = _list(raw);
-      final currency = (row[0] as String).toUpperCase();
-      final methods =
-          _list(
-              row[1],
-            ).map((method) => (method as String).toLowerCase()).toSet().toList()
-            ..sort();
-      if (methods.isNotEmpty) result[currency] = methods;
+      // The API returns [method, currencies]; the form needs currency → methods.
+      final method = (row[0] as String).toLowerCase();
+      for (final rawCurrency in _list(row[1])) {
+        final currency = (rawCurrency as String).toUpperCase();
+        methodsByCurrency.putIfAbsent(currency, () => <String>{}).add(method);
+      }
     }
-    if (result.isEmpty) {
+    if (methodsByCurrency.isEmpty) {
       throw const FormatException('No withdrawal methods available');
     }
-    return result;
+    return methodsByCurrency.map(
+      (currency, methods) => MapEntry(currency, methods.toList()..sort()),
+    );
   }
 
   Future<Map<String, dynamic>?> withdraw({
