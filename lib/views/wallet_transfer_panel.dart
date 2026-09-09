@@ -1,5 +1,6 @@
 import 'package:decimal/decimal.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/wallet_transfer.dart';
 import '../services/trading_service.dart';
@@ -78,6 +79,24 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
       if (mounted) setState(() => _error = '钱包余额刷新失败：$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _fillAndCopyAvailable(Decimal available) async {
+    if (_busy || _loading) return;
+    final value = available.toString();
+    _amount.text = value;
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已填入划转数量并复制到剪贴板')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已填入划转数量，但复制失败：$e')));
     }
   }
 
@@ -264,9 +283,24 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
           ),
           const SizedBox(height: 8),
           if (source != null) ...[
-            Text(
-              '余额：${source.balance} ${source.currency}  '
-              '可用：${available ?? '尚未计算'}',
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              children: [
+                Text('余额：${source.balance} ${source.currency}'),
+                if (available == null)
+                  const Text('可用：尚未计算')
+                else
+                  Tooltip(
+                    message: '填入划转数量并复制到剪贴板',
+                    child: TextButton(
+                      onPressed: enabled
+                          ? () => _fillAndCopyAvailable(available)
+                          : null,
+                      child: Text('可用：$available'),
+                    ),
+                  ),
+              ],
             ),
             Text('转入币种：${_to.currencyFor(source.currency)}'),
           ] else if (!_loading)
