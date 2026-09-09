@@ -1477,10 +1477,34 @@ class _MainScreenState extends State<MainScreen>
           ),
           const SizedBox(height: 3),
           Text('#${withdrawal.id} · $timeLabel'),
-          Text(
-            'Address: ${withdrawal.address}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Address: ${withdrawal.address}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 18),
+                tooltip: 'Copy Address 复制地址',
+                onPressed: withdrawal.address.isEmpty
+                    ? null
+                    : () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: withdrawal.address),
+                        );
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('地址已复制'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                      },
+              ),
+            ],
           ),
           if (transactionId != null && transactionId.isNotEmpty)
             Text(
