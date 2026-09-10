@@ -241,10 +241,7 @@ class _MainScreenState extends State<MainScreen>
                           const Tab(text: 'Home'),
                           const Tab(text: 'Account'),
                           Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
-                          Tab(
-                            text:
-                                'Orders (${_vm.activeOrders.length + _vm.failedOrders.length})',
-                          ),
+                          Tab(text: 'Orders (${_vm.activeOrders.length})'),
                           Tab(text: 'Positions (${_vm.positions.length})'),
                           const Tab(text: 'Trade History'),
                           Tab(
@@ -2249,7 +2246,7 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildOrdersTab() {
-    final orders = [..._vm.activeOrders, ..._vm.failedOrders];
+    final orders = _vm.activeOrders;
     return Column(
       children: [
         Container(
