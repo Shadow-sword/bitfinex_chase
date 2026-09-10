@@ -105,6 +105,7 @@ class Order {
   final double price;
   final String orderState; // 'open', 'filled', etc.
   final String orderType;
+  final String? statusReason;
   final bool isExchange;
   final int flags;
   bool get postOnly => flags & 4096 != 0;
@@ -126,6 +127,7 @@ class Order {
     required this.price,
     required this.orderState,
     required this.orderType,
+    this.statusReason,
     required this.isExchange,
     required this.flags,
     this.stopPrice,
@@ -141,6 +143,15 @@ class Order {
   bool get isBuy => direction == 'buy';
   bool get isSell => direction == 'sell';
   bool get isActive => orderState == 'open' || orderState == 'untriggered';
+  bool get isPostOnlyRejection =>
+      !isActive &&
+      !isFilled &&
+      (filledAmount ?? 0) == 0 &&
+      RegExp(
+        r'POST[ _-]?ONLY',
+        caseSensitive: false,
+      ).hasMatch(statusReason ?? '');
+  bool get isFailure => orderState == 'rejected' || isPostOnlyRejection;
   bool get isFilled => orderState == 'filled';
 }
 

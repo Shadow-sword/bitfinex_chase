@@ -483,6 +483,7 @@ class MainViewModel extends ChangeNotifier {
   final List<TradingPair> customTradingPairs = [];
   final List<TradingPairVM> tradingPairs = [];
   final List<OrderVM> activeOrders = [];
+  final List<OrderVM> failedOrders = [];
   final List<PositionVM> positions = [];
   final List<String> statusMessages = [];
   // Withdraw / Address book
@@ -3155,6 +3156,7 @@ class MainViewModel extends ChangeNotifier {
     _clearAccountState();
     _clearTradeHistoryState();
     activeOrders.clear();
+    failedOrders.clear();
     positions.clear();
     _latestMarkPrice.clear();
     _orderSubscriptionSymbols.clear();
@@ -3201,6 +3203,7 @@ class MainViewModel extends ChangeNotifier {
     _withdrawalRequestGeneration++;
     loadingOpenOrders = false;
     activeOrders.clear();
+    failedOrders.clear();
     positions.clear();
     final affectedSubscriptions = <String>{
       ..._sessionSubscribedSymbols,
@@ -3286,6 +3289,11 @@ class MainViewModel extends ChangeNotifier {
       );
       _setOrderSubscriptionRequired(symbol, stillRequired);
       _cleanupRuntimeRiskSymbol(symbol);
+    }
+    if (order.isFailure) {
+      failedOrders.removeWhere((item) => item.order.orderId == order.orderId);
+      failedOrders.insert(0, OrderVM(order));
+      if (failedOrders.length > 100) failedOrders.removeLast();
     }
     _sortActiveOrders();
     notifyListeners();

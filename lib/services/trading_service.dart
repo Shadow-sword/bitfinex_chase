@@ -212,6 +212,12 @@ class TradingService {
       if (o.isActive) {
         _trackActiveOrder(o);
       } else {
+        if (o.isFailure && _activeOrders.containsKey(o.orderId)) {
+          _status(
+            'Trade request failed for ${o.instrumentName}: '
+            '${o.statusReason ?? o.orderState}',
+          );
+        }
         _recordClosedOrder(o);
         _removeActiveOrder(o.orderId, instrumentName: o.instrumentName);
         _emit(_orderController, o);
@@ -1388,28 +1394,102 @@ class TradingService {
     }
 
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    final order = await _runInstrumentWrite(
-      instrumentName,
-      () => _api.placeOrder(
-        instrumentName: instrumentName,
-        leverage: leverage,
-        marginTrading: marginTrading,
-        direction: direction,
-        amount: normalizedAmount.apiAmount,
-        orderType: 'limit',
-        price: price,
-        postOnly: postOnly,
-        reduceOnly: reduceOnly,
-      ),
-    );
+    var submittedPrice = price;
+    final order = await _runInstrumentWrite(instrumentName, () async {
+      var submittedBook = ob;
+      const maxAttempts = 3;
+      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (!_isCurrentWrite(generation, instrumentName)) return null;
+        try {
+          final result = await _api.placeOrder(
+            instrumentName: instrumentName,
+            leverage: leverage,
+            marginTrading: marginTrading,
+            direction: direction,
+            amount: normalizedAmount.apiAmount,
+            orderType: 'limit',
+            price: submittedPrice,
+            postOnly: postOnly,
+            reduceOnly: reduceOnly,
+          );
+          if (result == null) {
+            throw StateError('Exchange returned no order confirmation');
+          }
+          if (!result.isActive && !result.isFilled) {
+            throw OrderSubmissionException(
+              result.statusReason ?? result.orderState,
+              order: result,
+            );
+          }
+          return result;
+        } on OrderSubmissionException catch (e) {
+          // Only chasing opts into repricing and resubmitting a rejected order.
+          if (!enableChasing ||
+              !postOnly ||
+              !e.isPostOnlyRejection ||
+              attempt == maxAttempts) {
+            rethrow;
+          }
+          if (!_isCurrentWrite(generation, instrumentName)) rethrow;
+          final symbol = _normalizeSymbol(instrumentName);
+          var latestBook = _orderBooks[symbol];
+          if (latestBook == null ||
+              latestBook.timestamp <= submittedBook.timestamp) {
+            latestBook = await orderBookStream
+                .firstWhere(
+                  (book) =>
+                      _normalizeSymbol(book.instrumentName) == symbol &&
+                      book.timestamp > submittedBook.timestamp,
+                )
+                .timeout(
+                  const Duration(seconds: 3),
+                  onTimeout: () => throw StateError(
+                    'Post-only order rejected; no fresh order book for retry: $e',
+                  ),
+                );
+          }
+          if (!_isCurrentWrite(generation, instrumentName)) rethrow;
+          if (latestBook.bestBid <= 0 ||
+              latestBook.bestAsk <= latestBook.bestBid) {
+            throw StateError('Post-only retry stopped: invalid order book');
+          }
+          final tick = dFrom(pair.tickSizeAt(latestBook.bestAsk));
+          var target = direction == 'buy'
+              ? dFrom(latestBook.bestAsk) - tick
+              : dFrom(latestBook.bestBid) + tick;
+          if (customPrice != null) {
+            final limit = dFrom(customPrice);
+            if ((direction == 'buy' && target > limit) ||
+                (direction == 'sell' && target < limit)) {
+              target = limit;
+            }
+          }
+          submittedPrice = dToDouble(roundToTick(target, tick));
+          if (submittedPrice <= 0 ||
+              (direction == 'buy' && submittedPrice >= latestBook.bestAsk) ||
+              (direction == 'sell' && submittedPrice <= latestBook.bestBid) ||
+              (customPrice != null &&
+                  (direction == 'buy'
+                      ? submittedPrice > customPrice
+                      : submittedPrice < customPrice))) {
+            throw StateError('Post-only retry stopped: no valid maker price');
+          }
+          submittedBook = latestBook;
+          _status(
+            'Post-only rejected for $instrumentName: $e; '
+            'retry ${attempt + 1}/$maxAttempts @ $submittedPrice',
+          );
+        }
+      }
+      throw StateError('Post-only submission attempts exhausted');
+    });
     if (!_isCurrentWrite(generation, instrumentName)) return null;
     if (order != null) {
       _status(
-        'Placed $direction order: ${normalizedAmount.apiAmount} @ $price',
+        'Placed $direction order: ${normalizedAmount.apiAmount} @ $submittedPrice',
       );
-      // Immediately reflect in local state/UI
       _trackActiveOrder(order);
-      if (enableChasing) {
+      if (enableChasing && order.isActive) {
         _enableChasingForOrder(order.orderId);
       }
     }

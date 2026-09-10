@@ -35,6 +35,7 @@ class _MainScreenState extends State<MainScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   late final TradingService _service;
   late final MainViewModel _vm;
+  StreamSubscription<String>? _tradeFailureSub;
   late TabController _tabs;
   bool _mobileNavigation = false;
   List<int> get _tabOrder => _mobileNavigation
@@ -124,6 +125,12 @@ class _MainScreenState extends State<MainScreen>
     super.initState();
     _service = widget.tradingService ?? TradingService();
     _vm = MainViewModel(_service);
+    _tradeFailureSub = _service.statusStream.listen((message) {
+      if (!mounted || !message.startsWith('Trade request failed')) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('下单 / 交易失败：$message')));
+    });
     WidgetsBinding.instance.addObserver(this);
     _tabs = TabController(length: 8, vsync: this)..addListener(_tabChanged);
     // Initialize percent buffer text and commit on focus loss
@@ -150,6 +157,7 @@ class _MainScreenState extends State<MainScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _tabs.dispose();
+    _tradeFailureSub?.cancel();
     _vm.dispose();
     _service.dispose();
     _newSymbolController.dispose();
@@ -233,7 +241,10 @@ class _MainScreenState extends State<MainScreen>
                           const Tab(text: 'Home'),
                           const Tab(text: 'Account'),
                           Tab(text: 'Pairs (${_vm.tradingPairs.length})'),
-                          Tab(text: 'Orders (${_vm.activeOrders.length})'),
+                          Tab(
+                            text:
+                                'Orders (${_vm.activeOrders.length + _vm.failedOrders.length})',
+                          ),
                           Tab(text: 'Positions (${_vm.positions.length})'),
                           const Tab(text: 'Trade History'),
                           Tab(
@@ -2238,6 +2249,7 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildOrdersTab() {
+    final orders = [..._vm.activeOrders, ..._vm.failedOrders];
     return Column(
       children: [
         Container(
@@ -2267,10 +2279,10 @@ class _MainScreenState extends State<MainScreen>
         ),
         Expanded(
           child: ListView.separated(
-            itemCount: _vm.activeOrders.length,
+            itemCount: orders.length,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, index) {
-              final o = _vm.activeOrders[index];
+              final o = orders[index];
               final sideColor = o.order.direction == 'buy'
                   ? Colors.green
                   : Colors.red;
@@ -2470,100 +2482,114 @@ class _MainScreenState extends State<MainScreen>
                                 ),
                               ),
                             infoItem('State: ', state),
+                            if (o.order.isFailure)
+                              infoItem(
+                                '失败原因: ',
+                                o.order.statusReason ?? state,
+                                color: Colors.red,
+                              ),
                           ],
                         ),
                         const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 4,
-                          children: [
-                            TextButton(
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                minimumSize: const Size(0, 0),
-                              ),
-                              onPressed:
-                                  o.order.orderType.toLowerCase() == 'limit' &&
-                                      _vm.canTradeSymbol(o.order.instrumentName)
-                                  ? () => _showModifyOrderDialog(o)
-                                  : null,
-                              child: const Text('Modify'),
-                            ),
-                            TextButton(
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                minimumSize: const Size(0, 0),
-                              ),
-                              onPressed: () => _vm.cancelOrder(o),
-                              child: const Text('Cancel'),
-                            ),
-                            // Per-order chasing toggle with tooltip when disabled
-                            Builder(
-                              builder: (context) {
-                                final isLimit =
-                                    o.order.orderType.toLowerCase() == 'limit';
-                                final isPostOnly = o.order.postOnly;
-                                final metadataVerified = _vm.canTradeSymbol(
-                                  o.order.instrumentName,
-                                );
-                                final eligible =
-                                    isLimit && isPostOnly && metadataVerified;
-                                final chased = _vm.isOrderChased(o);
-                                String? disabledReason;
-                                if (!metadataVerified) {
-                                  disabledReason =
-                                      'Verified instrument metadata unavailable';
-                                } else if (!eligible) {
-                                  if (!isLimit && !isPostOnly) {
-                                    disabledReason = '仅支持 Post-Only 限价单';
-                                  } else if (!isLimit) {
-                                    disabledReason = '仅支持限价单';
-                                  } else if (!isPostOnly) {
-                                    disabledReason = '仅支持 Post-Only 订单';
-                                  }
-                                }
-                                final tip = eligible
-                                    ? '追价：自动跟随最优价（仅此订单）'
-                                    : (disabledReason ?? '不可用');
-                                return Tooltip(
-                                  message: tip,
-                                  child: Opacity(
-                                    opacity: eligible ? 1.0 : 0.6,
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Checkbox(
-                                          value: chased,
-                                          onChanged: eligible
-                                              ? (v) => setState(
-                                                  () => _vm.setOrderChasing(
-                                                    o,
-                                                    v ?? false,
-                                                  ),
-                                                )
-                                              : null,
-                                          visualDensity: VisualDensity.compact,
-                                        ),
-                                        const Text(
-                                          'Chase',
-                                          style: TextStyle(fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
+                        if (o.order.isActive)
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
                                   ),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  minimumSize: const Size(0, 0),
+                                ),
+                                onPressed:
+                                    o.order.orderType.toLowerCase() ==
+                                            'limit' &&
+                                        _vm.canTradeSymbol(
+                                          o.order.instrumentName,
+                                        )
+                                    ? () => _showModifyOrderDialog(o)
+                                    : null,
+                                child: const Text('Modify'),
+                              ),
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  minimumSize: const Size(0, 0),
+                                ),
+                                onPressed: () => _vm.cancelOrder(o),
+                                child: const Text('Cancel'),
+                              ),
+                              // Per-order chasing toggle with tooltip when disabled
+                              Builder(
+                                builder: (context) {
+                                  final isLimit =
+                                      o.order.orderType.toLowerCase() ==
+                                      'limit';
+                                  final isPostOnly = o.order.postOnly;
+                                  final metadataVerified = _vm.canTradeSymbol(
+                                    o.order.instrumentName,
+                                  );
+                                  final eligible =
+                                      isLimit && isPostOnly && metadataVerified;
+                                  final chased = _vm.isOrderChased(o);
+                                  String? disabledReason;
+                                  if (!metadataVerified) {
+                                    disabledReason =
+                                        'Verified instrument metadata unavailable';
+                                  } else if (!eligible) {
+                                    if (!isLimit && !isPostOnly) {
+                                      disabledReason = '仅支持 Post-Only 限价单';
+                                    } else if (!isLimit) {
+                                      disabledReason = '仅支持限价单';
+                                    } else if (!isPostOnly) {
+                                      disabledReason = '仅支持 Post-Only 订单';
+                                    }
+                                  }
+                                  final tip = eligible
+                                      ? '追价：自动跟随最优价（仅此订单）'
+                                      : (disabledReason ?? '不可用');
+                                  return Tooltip(
+                                    message: tip,
+                                    child: Opacity(
+                                      opacity: eligible ? 1.0 : 0.6,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Checkbox(
+                                            value: chased,
+                                            onChanged: eligible
+                                                ? (v) => setState(
+                                                    () => _vm.setOrderChasing(
+                                                      o,
+                                                      v ?? false,
+                                                    ),
+                                                  )
+                                                : null,
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                          ),
+                                          const Text(
+                                            'Chase',
+                                            style: TextStyle(fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
                       ],
                     ),
                   );
