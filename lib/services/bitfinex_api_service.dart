@@ -11,6 +11,24 @@ import '../models/wallet_transfer.dart';
 import 'package:decimal/decimal.dart';
 import 'bitfinex_transport.dart';
 
+class OrderSubmissionException extends BitfinexApiException {
+  final String reason;
+  final Order? order;
+  const OrderSubmissionException(
+    this.reason, {
+    this.order,
+    Object code = 'order_rejected',
+  }) : super(code, reason);
+
+  bool get isPostOnlyRejection =>
+      (order == null ||
+          (!order!.isActive && (order!.filledAmount ?? 0) == 0)) &&
+      RegExp(r'POST[ _-]?ONLY', caseSensitive: false).hasMatch(reason);
+
+  @override
+  String toString() => reason;
+}
+
 /// Native Bitfinex v2 REST and WebSocket adapter. Symbols in the application
 /// omit the wire-only `t` prefix. Amounts in the application are unsigned base
 /// units; the sign is applied only when writing to Bitfinex.
@@ -554,10 +572,45 @@ class BitfinexApiService {
       if (pair.type == TradingPairType.future) 'lev': leverage,
       'meta': {'protect_selfmatch': 1},
     };
-    final row = await _writeOrder('on', body, cid: cid);
+    dynamic row;
+    try {
+      row = await _writeOrder('on', body, cid: cid);
+    } on OrderSubmissionException catch (e) {
+      if (e.order != null) rethrow;
+      // An error notification may contain only the request CID, with no
+      // exchange order ID. Keep this explicitly local failed attempt visible.
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final rejected = Order(
+        orderId: 'cid:$cid',
+        instrumentName: pair.symbol,
+        direction: direction,
+        amount: amount,
+        price: price ?? 0,
+        orderState: 'rejected',
+        statusReason: e.reason,
+        orderType: orderType,
+        isExchange: pair.type == TradingPairType.spot && !marginTrading,
+        flags: body['flags'] as int,
+        stopPrice: stopPrice,
+        trigger: trigger,
+        trailing: trailing,
+        filledAmount: 0,
+        creationTimestamp: now,
+        lastUpdateTimestamp: now,
+      );
+      _publishOrder(rejected);
+      throw OrderSubmissionException(e.reason, order: rejected, code: e.code);
+    }
     final order = _parseOrder(_list(row));
     _publishOrder(order);
-    return order;
+    final confirmed = _orders[order.orderId]!;
+    if (!confirmed.isActive && !confirmed.isFilled) {
+      throw OrderSubmissionException(
+        confirmed.statusReason ?? confirmed.orderState,
+        order: confirmed,
+      );
+    }
+    return confirmed;
   }
 
   Future<Order?> editOrder(
@@ -652,12 +705,17 @@ class BitfinexApiService {
       final response = await _transport.requestMessage(
         [0, operation, null, body],
         (event) {
-          if (event is! List ||
-              event.length < 3 ||
-              event[0] != 0 ||
-              event[1] != 'n') {
+          if (event is! List || event.length < 3 || event[0] != 0) {
             return false;
           }
+          // A successful request notification only acknowledges receipt. Wait
+          // for the actual new/closed order before reporting submission success.
+          if (operation == 'on' &&
+              (event[1] == 'on' || event[1] == 'oc' || event[1] == 'ou')) {
+            final data = event[2];
+            return data is List && data.length > 2 && data[2] == cid;
+          }
+          if (event[1] != 'n') return false;
           final notification = event[2];
           if (notification is! List ||
               notification.length < 8 ||
@@ -665,6 +723,15 @@ class BitfinexApiService {
             return false;
           }
           final data = notification[4];
+          if (operation == 'on' && notification[6] == 'SUCCESS') {
+            // Some responses already carry a terminal order.
+            if (data is! List ||
+                data.length < 20 ||
+                data[2] != cid ||
+                _parseOrder(data).isActive) {
+              return false;
+            }
+          }
           if (data is List) {
             return cid != null
                 ? data.length > 2 && data[2] == cid
@@ -678,7 +745,30 @@ class BitfinexApiService {
           return false;
         },
       );
-      return _notification(_list(response)[2]);
+      final event = _list(response);
+      if (operation == 'on' && event[1] != 'n') return event[2];
+      final notification = _list(event[2]);
+      if (operation == 'on' && notification[6] != 'SUCCESS') {
+        final reason = notification[7].toString();
+        final data = notification[4];
+        Order? rejected;
+        if (data is List &&
+            data.length >= 20 &&
+            data[0] is num &&
+            data[4] is num &&
+            data[5] is num &&
+            data[8] is String &&
+            data[13] is String) {
+          rejected = _parseOrder(data, rejectionReason: reason);
+          _publishOrder(rejected);
+        }
+        throw OrderSubmissionException(
+          reason,
+          order: rejected,
+          code: notification[5] ?? notification[6],
+        );
+      }
+      return _notification(notification);
     } on TimeoutException {
       outcomeUnknown = true;
       rethrow;
@@ -1119,7 +1209,7 @@ class BitfinexApiService {
     return row[4];
   }
 
-  Order _parseOrder(List<dynamic> row) {
+  Order _parseOrder(List<dynamic> row, {String? rejectionReason}) {
     if (row.length < 20) throw const FormatException('Invalid order');
     final remaining = _number(row[6]), original = _number(row[7]);
     final rawType = (row[8] as String).replaceFirst('EXCHANGE ', '');
@@ -1163,7 +1253,8 @@ class BitfinexApiService {
       direction: original > 0 ? 'buy' : 'sell',
       amount: original.abs(),
       price: _number(type == 'stop_limit' ? row[19] : row[16]),
-      orderState: state,
+      orderState: rejectionReason != null ? 'rejected' : state,
+      statusReason: rejectionReason ?? status,
       orderType: type,
       isExchange: (row[8] as String).startsWith('EXCHANGE '),
       flags: flags | (postOnly ? 4096 : 0),
