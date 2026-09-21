@@ -144,25 +144,30 @@ class BitfinexApiService {
         .toInt();
     _reconnectAttempts++;
     _emit(_disconnectedController, 'reconnecting in ${seconds}s');
-    _reconnectTimer = Timer(Duration(seconds: seconds), () async {
-      if (!_connectionWanted || _disposed) return;
-      _opening = true;
-      _clearSession();
-      try {
-        await _openSocket();
-        if (!_connectionWanted || _disposed) {
-          await _transport.disconnect();
-          return;
-        }
-        _reconnectAttempts = 0;
-        _emit(_connectedController, null);
-      } catch (e) {
-        _emit(_disconnectedController, 'Reconnect failed: $e');
-      } finally {
-        _opening = false;
-        if (!isConnected) _scheduleReconnect();
+    _reconnectTimer = Timer(Duration(seconds: seconds), _attemptReconnect);
+  }
+
+  /// Opens a socket and keeps the reconnect loop alive on failure. Shared by
+  /// the reconnect timer and the foreground-resume path so a transient resume
+  /// failure (e.g. network not yet ready) does not disable reconnection.
+  Future<void> _attemptReconnect() async {
+    if (!_connectionWanted || _disposed) return;
+    _opening = true;
+    _clearSession();
+    try {
+      await _openSocket();
+      if (!_connectionWanted || _disposed) {
+        await _transport.disconnect();
+        return;
       }
-    });
+      _reconnectAttempts = 0;
+      _emit(_connectedController, null);
+    } catch (e) {
+      _emit(_disconnectedController, 'Reconnect failed: $e');
+    } finally {
+      _opening = false;
+      if (!isConnected) _scheduleReconnect();
+    }
   }
 
   Future<void> disconnect() async {
@@ -186,12 +191,17 @@ class BitfinexApiService {
 
   Future<bool> ensureConnected() async {
     if (isConnected) return true;
+    // Keep the reconnect intent alive: connect() clears _connectionWanted on
+    // failure, which would permanently disable the reconnect loop after a
+    // transient resume failure. Use the reconnect path instead.
+    _connectionWanted = true;
     final pending = _socketOpening;
     if (pending != null) {
       await pending;
-      return isConnected;
+      if (isConnected) return true;
+      // The in-flight attempt failed; fall through to a fresh one.
     }
-    await connect(isTestnet: _paper);
+    await _attemptReconnect();
     return isConnected;
   }
 
