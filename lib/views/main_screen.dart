@@ -2820,6 +2820,11 @@ class _MainScreenState extends State<MainScreen>
                             ),
                             infoItem('Reference: ', markStr),
                             infoItem('Liq: ', liqStr),
+                            if (p.interestValue != 0)
+                              infoItem(
+                                'Funding: ',
+                                _formatTradeHistoryNumber(p.interestValue),
+                              ),
                             infoItem(isCompact ? 'Ent: ' : 'Entity: ', entStr),
                           ],
                         ),
