@@ -1868,6 +1868,26 @@ class MainViewModel extends ChangeNotifier {
     leverage: leverage,
   );
 
+  Future<bool> adjustPositionCollateral(
+    PositionVM position,
+    double collateral,
+  ) async {
+    final ok = await _service.adjustCollateral(
+      position.position.instrumentName,
+      collateral,
+    );
+    if (ok) {
+      // Collateral moves funds between wallets; refresh account summaries.
+      // ignore: discarded_futures
+      refreshAccountSummaries();
+    }
+    return ok;
+  }
+
+  Future<({double min, double max})?> getDerivCollateralLimits(
+    PositionVM position,
+  ) => _service.derivCollateralLimits(position.position.instrumentName);
+
   Future<void> closePosition(
     PositionVM p, {
     double? percentage,

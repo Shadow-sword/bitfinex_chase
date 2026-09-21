@@ -55,6 +55,9 @@ class Position {
   final double maintenanceMargin;
   final double initialMargin;
   final double openOrdersMargin;
+  // Derivatives position collateral (margin wallet currency); null for margin positions.
+  final double collateral;
+  final double? collateralMin;
   final double delta;
   final double? gamma;
   final double? theta;
@@ -81,6 +84,8 @@ class Position {
     required this.maintenanceMargin,
     required this.initialMargin,
     required this.openOrdersMargin,
+    this.collateral = 0,
+    this.collateralMin,
     required this.delta,
     this.gamma,
     this.theta,

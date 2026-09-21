@@ -923,6 +923,47 @@ class BitfinexApiService {
     );
   }
 
+  /// Sets the collateral assigned to the open derivative position for [symbol].
+  Future<void> setDerivCollateral(String symbol, double collateral) async {
+    _requireAuth();
+    if (!collateral.isFinite || collateral <= 0) {
+      throw ArgumentError('Collateral must be a finite number greater than 0');
+    }
+    final generation = _generation;
+    _requireAuth();
+    if (generation != _generation) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    _notification(
+      await _transport.privatePost('v2/auth/w/deriv/collateral/set', {
+        'symbol': 't$symbol',
+        'collateral': collateral.toStringAsFixed(8),
+      }),
+    );
+  }
+
+  /// Returns the (min, max) collateral allowed for the open derivative
+  /// position on [symbol].
+  Future<({double min, double max})> getDerivCollateralLimits(
+    String symbol,
+  ) async {
+    _requireAuth();
+    final generation = _generation;
+    _requireAuth();
+    if (generation != _generation) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    final row = _list(
+      await _transport.privatePost('v2/auth/calc/deriv/collateral/limits', {
+        'symbol': 't$symbol',
+      }),
+    );
+    if (row.length < 2) {
+      throw const FormatException('Invalid collateral limits response');
+    }
+    return (min: _number(row[0]), max: _number(row[1]));
+  }
+
   Future<Map<String, dynamic>?> getAccountSummary({
     String currency = 'USD',
   }) async {
@@ -1297,6 +1338,10 @@ class BitfinexApiService {
       leverage: r[9] == null ? 0 : _number(r[9]),
       maintenanceMargin: r.length > 18 && r[18] != null ? _number(r[18]) : 0,
       initialMargin: r.length > 17 && r[17] != null ? _number(r[17]) : 0,
+      collateral:
+          !isMargin && r.length > 17 && r[17] != null ? _number(r[17]) : 0,
+      collateralMin:
+          !isMargin && r.length > 18 && r[18] != null ? _number(r[18]) : null,
       openOrdersMargin: 0,
       delta: amount,
       floatingProfitLoss: pnl,

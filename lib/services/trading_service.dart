@@ -1650,6 +1650,76 @@ class TradingService {
           );
   }
 
+  /// Updates the collateral assigned to the open derivative position.
+  /// Returns true on success; validation failures report via _status and
+  /// return false. API errors are reported then rethrown for the dialog.
+  Future<bool> adjustCollateral(
+    String instrumentName,
+    double collateral,
+  ) async {
+    if (!_authenticated) {
+      _status('Please authenticate first');
+      return false;
+    }
+    final pair = _requireVerifiedInstrument(
+      instrumentName,
+      'adjust collateral for',
+    );
+    if (pair == null) return false;
+    if (!collateral.isFinite || collateral <= 0) {
+      _status('Collateral must be a finite number greater than 0');
+      return false;
+    }
+    final generation = _sessionGeneration;
+    Position? pos = _positions[_normalizeSymbol(instrumentName)];
+    pos ??= await _api.getPosition(instrumentName);
+    if (!_isCurrentWrite(generation, instrumentName)) return false;
+    if (pos == null || pos.size == 0) {
+      _status('No position for $instrumentName');
+      return false;
+    }
+    if (pos.kind != 'future') {
+      _status('Collateral adjustment is only supported on derivatives');
+      return false;
+    }
+    try {
+      await _api.setDerivCollateral(
+        _normalizeSymbol(instrumentName),
+        collateral,
+      );
+      if (!_isCurrentWrite(generation, instrumentName)) return false;
+      _status('Collateral updated for $instrumentName');
+      return true;
+    } catch (e) {
+      _status('Adjust collateral failed for $instrumentName: $e');
+      rethrow;
+    }
+  }
+
+  /// Returns the allowed (min, max) collateral range for the open derivative
+  /// position, or null when unavailable.
+  Future<({double min, double max})?> derivCollateralLimits(
+    String instrumentName,
+  ) async {
+    if (!_authenticated) {
+      _status('Please authenticate first');
+      return null;
+    }
+    final pair = _requireVerifiedInstrument(
+      instrumentName,
+      'query collateral limits for',
+    );
+    if (pair == null) return null;
+    try {
+      return await _api.getDerivCollateralLimits(
+        _normalizeSymbol(instrumentName),
+      );
+    } catch (e) {
+      _status('Collateral limits unavailable for $instrumentName: $e');
+      return null;
+    }
+  }
+
   Future<Order?> reversePosition(
     String instrumentName, {
     double? percentage,

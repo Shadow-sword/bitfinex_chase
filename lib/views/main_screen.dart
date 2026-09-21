@@ -2909,6 +2909,25 @@ class _MainScreenState extends State<MainScreen>
                                   : null,
                               child: const Text('Reverse'),
                             ),
+                            if (p.kind == 'future')
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  minimumSize: const Size(0, 0),
+                                ),
+                                onPressed:
+                                    (_vm.canTradeSymbol(p.instrumentName))
+                                    ? () => _showAdjustCollateralDialog(
+                                        _vm.positions[index],
+                                      )
+                                    : null,
+                                child: const Text('Collateral'),
+                              ),
                           ],
                         ),
                       ],
@@ -5190,6 +5209,138 @@ class _MainScreenState extends State<MainScreen>
       amount.dispose();
       price.dispose();
     }
+  }
+
+  Future<void> _showAdjustCollateralDialog(PositionVM p) async {
+    final controller = TextEditingController(
+      text: _formatTradeHistoryNumber(p.position.collateral),
+    );
+    ({double min, double max})? limits;
+    var loadingLimits = true;
+    var busy = false;
+    String? error;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        void Function(VoidCallback)? setter;
+        // ignore: discarded_futures
+        _vm.getDerivCollateralLimits(p).then((v) {
+          if (!dialogContext.mounted) return;
+          loadingLimits = false;
+          limits = v;
+          setter?.call(() {});
+        });
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            setter = setDialogState;
+            final input = double.tryParse(controller.text.trim());
+            final validInput = input != null && input.isFinite && input > 0;
+            final inRange = validInput &&
+                (limits == null ||
+                    (input >= limits!.min && input <= limits!.max));
+            final canSubmit =
+                _vm.canTradeSymbol(p.position.instrumentName) &&
+                inRange &&
+                !busy;
+            return AlertDialog(
+              title: Text('调整抵押品 · ${p.position.instrumentName}'),
+              content: SizedBox(
+                width: 400,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '当前抵押品: ${_formatTradeHistoryNumber(p.position.collateral)}',
+                      ),
+                      const SizedBox(height: 4),
+                      if (loadingLimits)
+                        const Text(
+                          '正在获取可调整范围…',
+                          style: TextStyle(fontSize: 12),
+                        )
+                      else if (limits != null)
+                        Text(
+                          '范围: ${_formatTradeHistoryNumber(limits!.min)} ~ ${_formatTradeHistoryNumber(limits!.max)}',
+                          style: const TextStyle(fontSize: 12),
+                        )
+                      else
+                        const Text(
+                          '范围不可用，提交后由交易所校验',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: controller,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: '新抵押品金额',
+                        ),
+                        onChanged: (_) => setDialogState(() {}),
+                      ),
+                      if (!inRange && controller.text.trim().isNotEmpty)
+                        Text(
+                          limits != null
+                              ? '请输入 ${_formatTradeHistoryNumber(limits!.min)} ~ ${_formatTradeHistoryNumber(limits!.max)} 之间的金额'
+                              : '请输入大于 0 的有效金额',
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      if (error != null)
+                        Text(
+                          error!,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: !canSubmit
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            busy = true;
+                            error = null;
+                          });
+                          try {
+                            final ok = await _vm.adjustPositionCollateral(
+                              p,
+                              input,
+                            );
+                            if (!ok) {
+                              throw StateError(
+                                'Collateral was not updated; see logs',
+                              );
+                            }
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext);
+                            }
+                          } catch (e) {
+                            if (dialogContext.mounted) {
+                              setDialogState(() {
+                                busy = false;
+                                error = e.toString();
+                              });
+                            }
+                          }
+                        },
+                  child: Text(busy ? '提交中…' : '确认调整'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
   }
 
   Future<void> _showClosePositionDialog(PositionVM p) async {
