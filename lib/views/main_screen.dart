@@ -1705,10 +1705,8 @@ class _MainScreenState extends State<MainScreen>
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          if (tp.usePercentInput)
-                                            _leverageSelector(tp),
-                                          if (tp.usePercentInput)
-                                            const SizedBox(width: 12),
+                                          _leverageSelector(tp),
+                                          const SizedBox(width: 12),
                                           _inputModeToggle(tp),
                                           const SizedBox(width: 12),
                                           _orderTypeToggle(tp),
@@ -1943,8 +1941,7 @@ class _MainScreenState extends State<MainScreen>
                                           spacing: 12,
                                           runSpacing: 6,
                                           children: [
-                                            if (tp.usePercentInput)
-                                              _leverageSelector(tp),
+                                            _leverageSelector(tp),
                                             _inputModeToggle(tp),
                                             _orderTypeToggle(tp),
                                           ],
