@@ -4244,11 +4244,13 @@ class _MainScreenState extends State<MainScreen>
                 ? (tp.bestAsk > 0 ? tp.bestAsk : null)
                 : (tp.bestBid > 0 ? tp.bestBid : null))
           : _vm.computeLimitPrice(tp, direction, custom: customPrice);
-      final res = _vm.computePercentOrderAmountWithMeta(
+      // Size against a freshly quoted exchange budget, not the cached preview.
+      final res = await _vm.resolvePercentOrderAmount(
         tp,
         direction,
         atPrice: atPrice,
       );
+      if (!mounted) return;
       final computed = res.$1;
       if (computed == null || computed <= 0) {
         ScaffoldMessenger.of(
@@ -4382,11 +4384,11 @@ class _MainScreenState extends State<MainScreen>
                     ),
                   if (usePct && usedAvailableFunds != null)
                     Text(
-                      'Sizing basis: ${usedAvailableFunds ? 'Available Funds' : 'Equity (fallback)'}',
+                      'Sizing basis: ${usedAvailableFunds ? 'Exchange order availability' : 'Unavailable'}',
                     ),
                   if (usePct && bufferFactor != null)
                     Text(
-                      'Safety buffer: use ${(bufferFactor * 100).toStringAsFixed(0)}% of funds',
+                      'Safety buffer: use ${(bufferFactor * 100).toStringAsFixed(0)}% of the exchange budget',
                     ),
                   ..._orderAmountConfirmationLines(conversion),
                   Text(
@@ -4957,7 +4959,14 @@ class _MainScreenState extends State<MainScreen>
     final livePair = _vm.findTradingPairVm(symbol);
     if (livePair == null || !livePair.pair.isVerified) return;
     final direction = position.position.direction;
-    final draft = TradingPairVM(livePair.pair)..leverage = livePair.leverage;
+    // Increasing an existing derivative position must default to that
+    // position's own leverage; the quick-order selector is unrelated and a
+    // lower value makes Bitfinex demand more collateral for the whole position.
+    final positionLeverage = position.position.leverage;
+    final draft = TradingPairVM(livePair.pair)
+      ..leverage = positionLeverage.isFinite && positionLeverage >= 1
+          ? positionLeverage.round().clamp(1, livePair.pair.maxLeverage)
+          : livePair.leverage;
     final amount = TextEditingController(
       text: draft.pair.minTradeAmount.toString(),
     );
@@ -4972,6 +4981,16 @@ class _MainScreenState extends State<MainScreen>
     String? error;
     if (position.position.kind != 'margin') {
       await _vm.ensureAccountMetricsForCurrency(draft.pair.marginCurrency);
+      // Warm the exchange order budget so percent mode has a figure on open.
+      final seedPrice = _vm.computeLimitPrice(livePair, direction);
+      if (seedPrice != null && seedPrice > 0) {
+        await _vm.ensureOrderAvailable(
+          draft,
+          direction,
+          seedPrice,
+          draft.leverage,
+        );
+      }
     }
     if (!mounted) {
       amount.dispose();

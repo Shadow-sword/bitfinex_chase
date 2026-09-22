@@ -506,7 +506,7 @@ class BitfinexApiService {
     double? stopPrice,
     String? trigger,
     double? trailing,
-    int leverage = 1,
+    int? leverage,
     bool marginTrading = false,
   }) async {
     _requireAuth();
@@ -532,7 +532,7 @@ class BitfinexApiService {
     if (reduceOnly && pair.type == TradingPairType.spot && !marginTrading) {
       throw ArgumentError('Exchange orders do not support reduce-only');
     }
-    if (leverage < 1 || leverage > pair.maxLeverage) {
+    if (leverage != null && (leverage < 1 || leverage > pair.maxLeverage)) {
       throw ArgumentError('Invalid leverage');
     }
     final nativeType = switch (orderType) {
@@ -578,8 +578,11 @@ class BitfinexApiService {
         'price_aux_limit': positive(price, 'Limit price'),
       if (orderType == 'trailing_stop')
         'price_trailing': positive(trailing, 'Trailing distance'),
-      // Carry the UI's selected leverage to the exchange.
-      if (pair.type == TradingPairType.future) 'lev': leverage,
+      // Carry the caller's leverage to the exchange. Bitfinex sizes the
+      // order's margin check against this value, so an unset leverage must
+      // stay absent instead of collapsing to 1x.
+      if (pair.type == TradingPairType.future && leverage != null)
+        'lev': leverage,
       'meta': {'protect_selfmatch': 1},
     };
     dynamic row;
@@ -944,12 +947,24 @@ class BitfinexApiService {
     if (generation != _generation) {
       throw StateError('账号会话已变更，请重新操作');
     }
-    _notification(
+    // This endpoint answers with [[STATUS]], not the 8-field operation
+    // notification used by the other write endpoints.
+    final rows = _list(
       await _transport.privatePost('v2/auth/w/deriv/collateral/set', {
         'symbol': 't$symbol',
         'collateral': collateral.toStringAsFixed(8),
       }),
     );
+    if (rows.isEmpty) {
+      throw const FormatException('Invalid collateral response');
+    }
+    final status = _list(rows.first);
+    if (status.isEmpty || _number(status.first) != 1) {
+      throw BitfinexApiException(
+        'deriv/collateral/set',
+        'Exchange rejected the collateral update',
+      );
+    }
   }
 
   /// Returns the (min, max) collateral allowed for the open derivative
@@ -972,6 +987,45 @@ class BitfinexApiService {
       throw const FormatException('Invalid collateral limits response');
     }
     return (min: _number(row[0]), max: _number(row[1]));
+  }
+
+  /// Returns the order size the exchange itself considers affordable for a
+  /// derivative order on [symbol] at [price] with [leverage], expressed in the
+  /// instrument's API amount unit. This is the same margin budget Bitfinex
+  /// applies when it accepts or rejects the order, so it already accounts for
+  /// open positions and resting orders.
+  Future<double> getDerivOrderAvailable({
+    required String symbol,
+    required String direction,
+    required double price,
+    required int leverage,
+  }) async {
+    _requireAuth();
+    if (direction != 'buy' && direction != 'sell') {
+      throw ArgumentError('Invalid direction');
+    }
+    if (!price.isFinite || price <= 0) {
+      throw ArgumentError('Price must be positive');
+    }
+    if (leverage < 1) throw ArgumentError('Invalid leverage');
+    final generation = _generation;
+    final row = _list(
+      await _transport.privatePost('v2/auth/calc/order/avail', {
+        'symbol': 't$symbol',
+        'dir': direction == 'buy' ? 1 : -1,
+        'rate': price.toStringAsFixed(8),
+        'type': 'DERIV',
+        'lev': '$leverage',
+      }),
+    );
+    if (generation != _generation) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    if (row.isEmpty) {
+      throw const FormatException('Invalid order availability response');
+    }
+    // The exchange signs the amount by direction; callers size on magnitude.
+    return _number(row[0]).abs();
   }
 
   Future<Map<String, dynamic>?> getAccountSummary({

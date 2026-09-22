@@ -48,11 +48,31 @@ class TradingPairVM {
        buyOffsetTicks = 0,
        sellOffsetTicks = 0,
        optionsExpanded = false,
-       leverage = 1,
+       leverage = defaultLeverageFor(pair),
        usePercentInput = false,
        buyPercent = 10,
        sellPercent = 10,
        useMarketOrder = false;
+
+  /// Leverage a freshly discovered instrument starts on. Bitfinex applies 10x
+  /// when an order omits `lev`; starting at 1x instead makes the exchange
+  /// demand the full notional as collateral.
+  static int defaultLeverageFor(TradingPair pair) =>
+      pair.type == TradingPairType.future
+      ? (pair.maxLeverage < 10 ? pair.maxLeverage : 10)
+      : 1;
+
+  /// Adopts new instrument metadata. An explicit leverage choice survives, but
+  /// the instrument default applies the first time the pair becomes verified:
+  /// before that `maxLeverage` is unknown and the selector cannot offer a
+  /// meaningful value.
+  void applyPair(TradingPair next) {
+    final wasVerified = pair.isVerified;
+    pair = next;
+    leverage = wasVerified
+        ? leverage.clamp(1, next.maxLeverage)
+        : defaultLeverageFor(next);
+  }
 
   String get symbol => pair.symbol;
   // Spot-only setting: when true, place market orders (no price input)
@@ -434,6 +454,20 @@ class _AccountMetricsCache {
   bool isExpired(Duration ttl) => DateTime.now().difference(fetchedAt) > ttl;
 }
 
+/// Order size Bitfinex reported as affordable, quoted against [rate].
+class _OrderAvailCache {
+  final double amount;
+  final double rate;
+  final DateTime fetchedAt;
+  const _OrderAvailCache(this.amount, this.rate, this.fetchedAt);
+
+  /// Availability is quoted against a reference price, so it goes stale both
+  /// with time and once that price has moved enough to matter.
+  bool isStale(double price, Duration ttl) =>
+      DateTime.now().difference(fetchedAt) > ttl ||
+      (price - rate).abs() > rate * 0.005;
+}
+
 class _RateCache {
   final double rate;
   final DateTime fetchedAt;
@@ -662,6 +696,9 @@ class MainViewModel extends ChangeNotifier {
   final Map<String, Timer> _subscriptionRetryTimers = {};
   final Map<String, int> _subscriptionRetryAttempts = {};
   final Map<String, _AccountMetricsCache> _accountMetrics = {};
+  final Map<String, _OrderAvailCache> _orderAvail = {};
+  final Map<String, Future<void>> _orderAvailRequests = {};
+  static const Duration _orderAvailTtl = Duration(seconds: 10);
   final Map<String, int> _accountMetricLoadGenerations = {};
   static const Duration _accountMetricsTtl = Duration(seconds: 10);
 
@@ -763,8 +800,10 @@ class MainViewModel extends ChangeNotifier {
       for (final vm in tradingPairs) {
         final metadata = bySymbol[vm.symbol];
         if (metadata == null || vm.pair.isVerified) continue;
-        vm.pair = metadata.withMaxPriceDeviationPercent(
-          vm.pair.maxPriceDeviationPercent,
+        vm.applyPair(
+          metadata.withMaxPriceDeviationPercent(
+            vm.pair.maxPriceDeviationPercent,
+          ),
         );
         if (vm.buyAmount == 0) vm.buyAmount = metadata.minTradeAmount;
         if (vm.sellAmount == 0) vm.sellAmount = metadata.minTradeAmount;
@@ -1856,7 +1895,7 @@ class MainViewModel extends ChangeNotifier {
     double? price,
     bool postOnly = true,
     bool enableChasing = false,
-    int leverage = 1,
+    int? leverage,
   }) => _service.increasePosition(
     position.position.instrumentName,
     expectedDirection: position.position.direction,
@@ -2467,7 +2506,61 @@ class MainViewModel extends ChangeNotifier {
     return dToDouble(rounded);
   }
 
-  // Same as computePercentOrderAmount but returns meta info for UI
+  String _orderAvailKey(String symbol, String direction, int leverage) =>
+      '${_normalizeSymbol(symbol)}|${direction.toLowerCase()}|$leverage';
+
+  /// Fetches and caches the exchange's own order-size budget for [tp]. The
+  /// budget already reflects leverage, open positions and resting orders, so
+  /// percent sizing does not have to reconstruct it from wallet balances.
+  Future<void> ensureOrderAvailable(
+    TradingPairVM tp,
+    String direction,
+    double price,
+    int leverage,
+  ) {
+    final key = _orderAvailKey(tp.symbol, direction, leverage);
+    // Callers that await this must see the answer, so concurrent callers join
+    // the in-flight request instead of returning before it lands.
+    final pending = _orderAvailRequests[key];
+    if (pending != null) return pending;
+    late final Future<void> request;
+    request = _fetchOrderAvailable(key, tp, direction, price, leverage)
+        .whenComplete(() {
+          if (identical(_orderAvailRequests[key], request)) {
+            _orderAvailRequests.remove(key);
+          }
+        });
+    _orderAvailRequests[key] = request;
+    return request;
+  }
+
+  Future<void> _fetchOrderAvailable(
+    String key,
+    TradingPairVM tp,
+    String direction,
+    double price,
+    int leverage,
+  ) async {
+    final generation = _accountStateGeneration;
+    try {
+      final available = await _service.derivOrderAvailable(
+        tp.symbol,
+        direction: direction,
+        price: price,
+        leverage: leverage,
+      );
+      if (available == null || !_isCurrentAccountState(generation)) return;
+      _orderAvail[key] = _OrderAvailCache(available, price, DateTime.now());
+      notifyListeners();
+    } catch (e) {
+      _onStatus('Order availability failed for ${tp.symbol}: $e');
+    }
+  }
+
+  /// Percent sizing for the order ticket. Reads the cached exchange budget so
+  /// it stays synchronous for rebuilds; a missing or stale entry triggers a
+  /// refresh in the background. Use [resolvePercentOrderAmount] before actually
+  /// submitting, which waits for a current budget.
   (double? amount, bool usedAvailableFunds, double bufferFactor)
   computePercentOrderAmountWithMeta(
     TradingPairVM tp,
@@ -2478,8 +2571,6 @@ class MainViewModel extends ChangeNotifier {
       return (null, false, 1.0);
     }
     final lev = tp.leverage.clamp(1, tp.pair.maxLeverage);
-    if (lev <= 0) return (null, false, percentSizingBuffer);
-
     final pct = (direction.toLowerCase() == 'buy')
         ? tp.buyPercent
         : tp.sellPercent;
@@ -2487,27 +2578,39 @@ class MainViewModel extends ChangeNotifier {
     final price = atPrice ?? computeLimitPrice(tp, direction);
     if (price == null || price <= 0) return (null, false, percentSizingBuffer);
 
-    final isInverse = tp.pair.amountUnit == AmountUnit.usd;
-    final marginCurrency = tp.pair.marginCurrency;
-    final metrics = _accountMetrics[marginCurrency.trim().toUpperCase()];
-    if (metrics == null) {
+    final cached = _orderAvail[_orderAvailKey(tp.symbol, direction, lev)];
+    if (cached == null || cached.isStale(price, _orderAvailTtl)) {
       // ignore: discarded_futures
-      ensureAccountMetricsForCurrency(marginCurrency);
-      return (null, false, percentSizingBuffer);
+      ensureOrderAvailable(tp, direction, price, lev);
+      if (cached == null) return (null, false, percentSizingBuffer);
     }
-    const usedAvailable = true;
-    final baseFunds = metrics.availableFunds;
-    if (baseFunds <= 0) return (null, usedAvailable, percentSizingBuffer);
-    final safeFunds = baseFunds * percentSizingBuffer;
+    // The budget is the full affordable size; the buffer only has to absorb
+    // fees and the price drift since it was quoted.
+    final amount = cached.amount * percentSizingBuffer * (pct / 100.0);
+    return (amount, true, percentSizingBuffer);
+  }
 
-    double notionalQuote;
-    if (isInverse) {
-      notionalQuote = safeFunds * price * (lev / 1.0) * (pct / 100.0);
-    } else {
-      notionalQuote = safeFunds * (lev / 1.0) * (pct / 100.0);
+  /// Percent sizing for submission: refreshes the exchange budget first so the
+  /// order is sized against what Bitfinex will actually accept.
+  Future<(double? amount, bool usedAvailableFunds, double bufferFactor)>
+  resolvePercentOrderAmount(
+    TradingPairVM tp,
+    String direction, {
+    double? atPrice,
+  }) async {
+    if (tp.pair.isVerified && tp.pair.type == TradingPairType.future) {
+      final price = atPrice ?? computeLimitPrice(tp, direction);
+      if (price != null && price > 0) {
+        final lev = tp.leverage.clamp(1, tp.pair.maxLeverage);
+        final key = _orderAvailKey(tp.symbol, direction, lev);
+        final cached = _orderAvail[key];
+        if (cached == null || cached.isStale(price, _orderAvailTtl)) {
+          _orderAvail.remove(key);
+          await ensureOrderAvailable(tp, direction, price, lev);
+        }
+      }
     }
-    final amount = isInverse ? notionalQuote : (notionalQuote / price);
-    return (amount, usedAvailable, percentSizingBuffer);
+    return computePercentOrderAmountWithMeta(tp, direction, atPrice: atPrice);
   }
 
   Future<void> setPercentSizingBuffer(double v) async {
@@ -2865,7 +2968,7 @@ class MainViewModel extends ChangeNotifier {
       final pair = entry.value;
       final retained = retainedVms[symbol];
       if (retained != null) {
-        retained.pair = pair;
+        retained.applyPair(pair);
       } else {
         tradingPairs.add(TradingPairVM(pair));
       }
@@ -3130,10 +3233,9 @@ class MainViewModel extends ChangeNotifier {
     );
     if (index >= 0) {
       final vm = tradingPairs[index];
-      vm.pair = pair;
+      vm.applyPair(pair);
       if (vm.buyAmount == 0) vm.buyAmount = pair.minTradeAmount;
       if (vm.sellAmount == 0) vm.sellAmount = pair.minTradeAmount;
-      vm.leverage = vm.leverage.clamp(1, pair.maxLeverage);
     }
     final customIndex = customTradingPairs.indexWhere(
       (item) => _normalizeSymbol(item.symbol) == normalized,
@@ -3265,6 +3367,8 @@ class MainViewModel extends ChangeNotifier {
     loadingAccountCny = false;
     _accountMetrics.clear();
     _accountMetricLoadGenerations.clear();
+    _orderAvail.clear();
+    _orderAvailRequests.clear();
     _usdRates.clear();
     _usdRateRequests.clear();
     _btcRates.clear();

@@ -1346,7 +1346,7 @@ class TradingService {
     double? customPrice,
     bool enableChasing = false,
     bool postOnly = true,
-    int leverage = 1,
+    int? leverage,
     bool marginTrading = false,
     bool reduceOnly = false,
   }) async {
@@ -1500,7 +1500,7 @@ class TradingService {
     String instrumentName,
     String direction,
     double amount, {
-    int leverage = 1,
+    int? leverage,
     bool marginTrading = false,
     bool reduceOnly = false,
   }) async {
@@ -1606,6 +1606,19 @@ class TradingService {
     );
   }
 
+  /// Leverage to attach to an order that acts on an existing derivative
+  /// position. Bitfinex sizes the order's margin check against `lev`, so
+  /// close/reverse/protection orders must carry the position's own leverage
+  /// instead of the caller default. Returns null when the position leverage is
+  /// not a usable exchange value, leaving `lev` off the request.
+  int? _positionLeverage(TradingPair pair, Position position) {
+    if (pair.type != TradingPairType.future) return null;
+    final leverage = position.leverage;
+    if (!leverage.isFinite || leverage < 1) return null;
+    final rounded = leverage.round();
+    return rounded > pair.maxLeverage ? pair.maxLeverage : rounded;
+  }
+
   Future<Order?> increasePosition(
     String instrumentName, {
     required String expectedDirection,
@@ -1614,7 +1627,7 @@ class TradingService {
     double? price,
     bool postOnly = true,
     bool enableChasing = false,
-    int leverage = 1,
+    int? leverage,
   }) async {
     final current = _positions[_normalizeSymbol(instrumentName)];
     if (current == null ||
@@ -1693,6 +1706,42 @@ class TradingService {
     } catch (e) {
       _status('Adjust collateral failed for $instrumentName: $e');
       rethrow;
+    }
+  }
+
+  /// Returns the order size Bitfinex considers affordable for a derivative
+  /// order at [price] with [leverage], in the instrument's API amount unit.
+  /// Returns null when the instrument is not a verified derivative or the
+  /// exchange could not answer.
+  Future<double?> derivOrderAvailable(
+    String instrumentName, {
+    required String direction,
+    required double price,
+    required int leverage,
+  }) async {
+    if (!_authenticated) {
+      _status('Please authenticate first');
+      return null;
+    }
+    final pair = _requireVerifiedInstrument(instrumentName, 'size orders for');
+    if (pair == null) return null;
+    if (pair.type != TradingPairType.future) {
+      _status('Order availability is only calculated for derivatives');
+      return null;
+    }
+    final generation = _sessionGeneration;
+    try {
+      final available = await _api.getDerivOrderAvailable(
+        symbol: _normalizeSymbol(instrumentName),
+        direction: direction,
+        price: price,
+        leverage: leverage.clamp(1, pair.maxLeverage),
+      );
+      if (!_isCurrentPrivateOperation(generation)) return null;
+      return available;
+    } catch (e) {
+      _status('Order availability unavailable for $instrumentName: $e');
+      return null;
     }
   }
 
@@ -1793,6 +1842,7 @@ class TradingService {
         () => _api.placeOrder(
           instrumentName: instrumentName,
           marginTrading: isMargin,
+          leverage: _positionLeverage(pair, pos!),
           direction: direction,
           amount: apiAmount,
           orderType: 'market',
@@ -1818,6 +1868,7 @@ class TradingService {
         () => _api.placeOrder(
           instrumentName: instrumentName,
           marginTrading: isMargin,
+          leverage: _positionLeverage(pair, pos!),
           direction: direction,
           amount: apiAmount,
           orderType: 'limit',
@@ -1957,6 +2008,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
+        leverage: _positionLeverage(pair, pos!),
         direction: closeDirection,
         amount: apiAmount,
         orderType: 'limit',
@@ -2073,6 +2125,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
+        leverage: _positionLeverage(pair, pos!),
         direction: direction,
         amount: apiAmount,
         orderType: 'market',
@@ -2228,6 +2281,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
+        leverage: _positionLeverage(pair, pos!),
         direction: direction,
         amount: apiAmount,
         orderType: type,
