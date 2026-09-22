@@ -1403,7 +1403,7 @@ class TradingService {
         try {
           final result = await _api.placeOrder(
             instrumentName: instrumentName,
-            leverage: leverage,
+            leverage: reduceOnly ? _reduceOnlyLeverage(pair) : leverage,
             marginTrading: marginTrading,
             direction: direction,
             amount: normalizedAmount.apiAmount,
@@ -1526,7 +1526,7 @@ class TradingService {
       instrumentName,
       () => _api.placeOrder(
         instrumentName: instrumentName,
-        leverage: leverage,
+        leverage: reduceOnly ? _reduceOnlyLeverage(pair) : leverage,
         marginTrading: marginTrading,
         direction: direction,
         amount: apiAmount,
@@ -1606,10 +1606,20 @@ class TradingService {
     );
   }
 
-  /// Leverage to attach to an order that acts on an existing derivative
-  /// position. Bitfinex sizes the order's margin check against `lev`, so
-  /// close/reverse/protection orders must carry the position's own leverage
-  /// instead of the caller default. Returns null when the position leverage is
+  /// Leverage for reduce-only orders on a derivative position. `lev` on these
+  /// orders never changes the position's leverage or collateral, but Bitfinex
+  /// still applies it twice: the admission check scales the order's budget by
+  /// it, and while the order rests (untriggered stops included) it reserves
+  /// notional / lev of wallet margin, which also lowers the maximum assignable
+  /// collateral. The instrument maximum keeps both as permissive as the
+  /// exchange allows and does not depend on the position's pushed leverage,
+  /// which is often null.
+  int? _reduceOnlyLeverage(TradingPair pair) =>
+      pair.type == TradingPairType.future ? pair.maxLeverage : null;
+
+  /// Leverage for an order that turns an existing derivative position around.
+  /// Its fill opens new exposure, so it carries the position's own leverage
+  /// rather than a caller default. Returns null when the position leverage is
   /// not a usable exchange value, leaving `lev` off the request.
   int? _positionLeverage(TradingPair pair, Position position) {
     if (pair.type != TradingPairType.future) return null;
@@ -2008,7 +2018,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
-        leverage: _positionLeverage(pair, pos!),
+        leverage: _reduceOnlyLeverage(pair),
         direction: closeDirection,
         amount: apiAmount,
         orderType: 'limit',
@@ -2125,7 +2135,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
-        leverage: _positionLeverage(pair, pos!),
+        leverage: _reduceOnlyLeverage(pair),
         direction: direction,
         amount: apiAmount,
         orderType: 'market',
@@ -2281,7 +2291,7 @@ class TradingService {
       () => _api.placeOrder(
         instrumentName: instrumentName,
         marginTrading: isMargin,
-        leverage: _positionLeverage(pair, pos!),
+        leverage: _reduceOnlyLeverage(pair),
         direction: direction,
         amount: apiAmount,
         orderType: type,
