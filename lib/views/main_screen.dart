@@ -4959,9 +4959,10 @@ class _MainScreenState extends State<MainScreen>
     final livePair = _vm.findTradingPairVm(symbol);
     if (livePair == null || !livePair.pair.isVerified) return;
     final direction = position.position.direction;
-    // Increasing an existing derivative position must default to that
-    // position's own leverage; the quick-order selector is unrelated and a
-    // lower value makes Bitfinex demand more collateral for the whole position.
+    // Increasing an existing derivative position defaults to that position's
+    // own leverage: Bitfinex collateralises the added size at the order's
+    // leverage, so the unrelated quick-order selector value would lock a
+    // different margin ratio and shift the position's blended leverage.
     final positionLeverage = position.position.leverage;
     final draft = TradingPairVM(livePair.pair)
       ..leverage = positionLeverage.isFinite && positionLeverage >= 1

@@ -1389,6 +1389,18 @@ class BitfinexApiService {
         : amount != 0 && r[6] != null
         ? average + pnl / amount
         : 0.0;
+    final collateral = !isMargin && r.length > 17 && r[17] != null
+        ? _number(r[17])
+        : 0.0;
+    // Position pushes often send LEVERAGE as null (calculated value not yet
+    // available). For derivatives Bitfinex defines it as the base-price
+    // notional over the assigned collateral, so the same message still yields
+    // the exact value. Margin positions have no collateral and stay unknown.
+    final leverage = r[9] != null
+        ? _number(r[9])
+        : collateral > 0 && amount != 0
+        ? amount.abs() * average / collateral
+        : 0.0;
     return Position(
       instrumentName: symbol,
       kind: isMargin ? 'margin' : 'future',
@@ -1399,11 +1411,10 @@ class BitfinexApiService {
       markPrice: mark,
       indexPrice: 0,
       settlementPrice: 0,
-      leverage: r[9] == null ? 0 : _number(r[9]),
+      leverage: leverage,
       maintenanceMargin: r.length > 18 && r[18] != null ? _number(r[18]) : 0,
       initialMargin: r.length > 17 && r[17] != null ? _number(r[17]) : 0,
-      collateral:
-          !isMargin && r.length > 17 && r[17] != null ? _number(r[17]) : 0,
+      collateral: collateral,
       collateralMin:
           !isMargin && r.length > 18 && r[18] != null ? _number(r[18]) : null,
       openOrdersMargin: 0,
