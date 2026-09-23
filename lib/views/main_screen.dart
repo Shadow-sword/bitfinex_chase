@@ -79,7 +79,7 @@ class _MainScreenState extends State<MainScreen>
   // Withdraw inputs
   final TextEditingController _withdrawAmountController =
       TextEditingController();
-  String _withdrawCurrency = 'BTC';
+  String? _withdrawCurrency;
   final _withdrawAddressController = TextEditingController();
   String? _withdrawMethod;
   Map<String, List<String>> _withdrawMethods = {};
@@ -1191,6 +1191,80 @@ class _MainScreenState extends State<MainScreen>
     }
   }
 
+  /// Currencies with Exchange-wallet funds to withdraw. The selection stays
+  /// listed after its balance runs out so its history remains in view.
+  List<String> _withdrawCurrencyOptions() {
+    final funded = {
+      for (final s in _vm.accountSummaries?.summaries ?? const [])
+        if (s.availableWithdrawalFunds > 0) s.currency,
+    };
+    return _withdrawMethods.keys
+        .where((c) => funded.contains(c) || c == _withdrawCurrency)
+        .toList()
+      ..sort();
+  }
+
+  /// Distinct address/network/memo destinations in the loaded history, newest
+  /// first.
+  List<Withdrawal> _withdrawDestinations() {
+    final currency = _withdrawCurrency;
+    if (currency == null || _vm.withdrawalsCurrency != currency) {
+      return const [];
+    }
+    final seen = <String>{};
+    return [
+      for (final w in _vm.withdrawals)
+        if (w.address.isNotEmpty &&
+            seen.add('${w.address}|${w.method}|${w.paymentId ?? ''}'))
+          w,
+    ];
+  }
+
+  void _applyWithdrawDestination(Withdrawal destination) {
+    final methods = _withdrawMethods[_withdrawCurrency] ?? const <String>[];
+    setState(() {
+      _withdrawAddressController.text = destination.address;
+      _withdrawTagController.text = destination.paymentId ?? '';
+      // A network that is no longer offered must be chosen again explicitly.
+      _withdrawMethod = methods.contains(destination.method)
+          ? destination.method
+          : null;
+    });
+  }
+
+  Widget? _withdrawDestinationPicker() {
+    final destinations = _withdrawDestinations();
+    if (destinations.isEmpty) return null;
+    return PopupMenuButton<Withdrawal>(
+      icon: const Icon(Icons.history),
+      tooltip: '从提款历史选择',
+      constraints: const BoxConstraints(maxWidth: 420),
+      onSelected: _applyWithdrawDestination,
+      itemBuilder: (context) => [
+        for (final d in destinations)
+          PopupMenuItem(
+            value: d,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(d.address),
+                Text(
+                  [
+                    d.method ?? '网络未知',
+                    if (d.paymentId?.isNotEmpty ?? false) 'Memo ${d.paymentId}',
+                    if ((d.updatedAt ?? d.createdAt) case final t?)
+                      _displayDateTime(t),
+                  ].join(' · '),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget _buildWithdrawalPanel() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1202,8 +1276,11 @@ class _MainScreenState extends State<MainScreen>
           if (_withdrawPanelExpanded && _withdrawMethods.isEmpty) {
             _loadWithdrawMethods();
           }
-          if (_withdrawPanelExpanded && _vm.isAuthenticated) {
-            _vm.loadWithdrawals(currency: _withdrawCurrency);
+          final currency = _withdrawCurrency;
+          if (_withdrawPanelExpanded &&
+              _vm.isAuthenticated &&
+              currency != null) {
+            _vm.loadWithdrawals(currency: currency);
           }
         },
       ),
@@ -1225,6 +1302,14 @@ class _MainScreenState extends State<MainScreen>
                   child: const Text('重新加载'),
                 ),
               ],
+              if (_withdrawMethods.isNotEmpty &&
+                  _withdrawCurrencyOptions().isEmpty)
+                Text(
+                  _vm.accountSummariesError ??
+                      (_vm.loadingAccountSummaries
+                          ? '正在获取 Exchange 钱包余额…'
+                          : 'Exchange 钱包没有可提款余额的币种'),
+                ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
@@ -1242,7 +1327,7 @@ class _MainScreenState extends State<MainScreen>
                           : null,
                       isExpanded: true,
                       decoration: const InputDecoration(labelText: 'Currency'),
-                      items: (_withdrawMethods.keys.toList()..sort())
+                      items: _withdrawCurrencyOptions()
                           .map(
                             (currency) => DropdownMenuItem(
                               value: currency,
@@ -1271,15 +1356,20 @@ class _MainScreenState extends State<MainScreen>
                     width: 320,
                     child: TextField(
                       controller: _withdrawAddressController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Destination address',
+                        suffixIcon: _withdrawDestinationPicker(),
                       ),
                     ),
                   ),
                   SizedBox(
                     width: 230,
                     child: DropdownButtonFormField<String>(
-                      key: ValueKey('withdraw-method-$_withdrawCurrency'),
+                      // The method is also set from history, so it is part of
+                      // the key to refresh the field's initial value.
+                      key: ValueKey(
+                        'withdraw-method-$_withdrawCurrency-$_withdrawMethod',
+                      ),
                       initialValue: _withdrawMethod,
                       isExpanded: true,
                       decoration: const InputDecoration(
@@ -1358,8 +1448,12 @@ class _MainScreenState extends State<MainScreen>
                     ),
                   ),
                   IconButton(
-                    onPressed: _vm.isAuthenticated && !_vm.loadingWithdrawals
-                        ? () => _vm.loadWithdrawals(currency: _withdrawCurrency)
+                    onPressed:
+                        _vm.isAuthenticated &&
+                            !_vm.loadingWithdrawals &&
+                            _withdrawCurrency != null
+                        ? () =>
+                              _vm.loadWithdrawals(currency: _withdrawCurrency!)
                         : null,
                     icon: const Icon(Icons.refresh),
                   ),
@@ -1379,7 +1473,7 @@ class _MainScreenState extends State<MainScreen>
                   onPressed: _vm.loadingWithdrawals
                       ? null
                       : () => _vm.loadWithdrawals(
-                          currency: _withdrawCurrency,
+                          currency: _withdrawCurrency!,
                           loadMore: true,
                         ),
                   child: const Text('Load more'),
@@ -1391,14 +1485,15 @@ class _MainScreenState extends State<MainScreen>
   );
 
   Future<void> _confirmAndWithdraw() async {
+    final currency = _withdrawCurrency;
     final addr = _withdrawAddressController.text.trim();
     final method = _withdrawMethod;
     final amount = double.tryParse(_withdrawAmountController.text.trim());
     final beneficiarySelf = _withdrawBeneficiarySelf;
-    if (addr.isEmpty || method == null || method.isEmpty) {
+    if (currency == null || addr.isEmpty || method == null || method.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('请填写提款地址和网络')));
+      ).showSnackBar(const SnackBar(content: Text('请选择币种并填写提款地址和网络')));
       return;
     }
     if (amount == null || amount <= 0) {
@@ -1416,7 +1511,7 @@ class _MainScreenState extends State<MainScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Currency: $_withdrawCurrency'),
+              Text('Currency: $currency'),
               Text('Amount: ${amount.toStringAsFixed(8)}'),
               Text('Address: $addr'),
               Text('Method: $method'),
@@ -1439,7 +1534,7 @@ class _MainScreenState extends State<MainScreen>
     );
     if (confirmed != true) return;
     final ok = await _vm.withdraw(
-      currency: _withdrawCurrency,
+      currency: currency,
       address: addr,
       amount: amount,
       method: method,

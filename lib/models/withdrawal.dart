@@ -4,6 +4,9 @@ class Withdrawal {
   final double amount;
   final double fee;
   final String address;
+  // Lower-case Bitfinex withdrawal method (network), e.g. tetherusdtcelo.
+  final String? method;
+  final String? paymentId;
   final String state;
   final String? transactionId;
   final int createdTimestamp;
@@ -15,6 +18,8 @@ class Withdrawal {
     required this.amount,
     required this.fee,
     required this.address,
+    this.method,
+    this.paymentId,
     required this.state,
     this.transactionId,
     required this.createdTimestamp,
@@ -50,6 +55,8 @@ class Withdrawal {
       amount: amount,
       fee: fee,
       address: address,
+      method: (map['method'] as String?)?.trim().toLowerCase(),
+      paymentId: (map['payment_id'] as String?)?.trim(),
       state: state,
       transactionId: (map['transaction_id'] as String?)?.trim(),
       createdTimestamp: createdTimestamp,
@@ -63,6 +70,8 @@ class Withdrawal {
     'amount': amount,
     'fee': fee,
     'address': address,
+    'method': method,
+    'payment_id': paymentId,
     'state': state,
     'transaction_id': transactionId,
     'created_timestamp': createdTimestamp,

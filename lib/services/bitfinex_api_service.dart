@@ -1305,6 +1305,9 @@ class BitfinexApiService {
           amount: _number(r[12]).abs(),
           fee: _number(r[13]).abs(),
           address: r[16] as String? ?? '',
+          // CURRENCY_NAME is the withdrawal method, e.g. TETHERUSDTCELO.
+          method: (r[2] as String?)?.toLowerCase(),
+          paymentId: r[17]?.toString(),
           state: (r[9] as String).toLowerCase(),
           transactionId: r[20] as String?,
           createdTimestamp: (r[5] as num).toInt(),
