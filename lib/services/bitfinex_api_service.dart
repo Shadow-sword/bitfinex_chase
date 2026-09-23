@@ -1367,7 +1367,7 @@ class BitfinexApiService {
       throw ArgumentError('Withdrawal method does not match currency');
     }
     final paymentId = destinationTag?.trim();
-    final data = _notification(
+    final response = _list(
       await _transport.privatePost('v2/auth/w/withdraw', {
         'wallet': 'exchange',
         'method': method.toLowerCase(),
@@ -1376,7 +1376,14 @@ class BitfinexApiService {
         if (paymentId != null && paymentId.isNotEmpty) 'payment_id': paymentId,
       }),
     );
-    return {'id': _list(data)[0]};
+    final data = _notification(response);
+    // A rejected withdrawal still arrives as a SUCCESS notification; only a
+    // WITHDRAWAL_ID of 0/null marks it, and TEXT carries the exchange's reason.
+    final id = data is List && data.isNotEmpty ? data[0] : null;
+    if (id is! num || id <= 0) {
+      throw BitfinexApiException('withdraw', response[7].toString());
+    }
+    return {'id': id};
   }
 
   dynamic _notification(dynamic result) {
