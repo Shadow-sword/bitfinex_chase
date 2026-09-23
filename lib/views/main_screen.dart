@@ -2633,6 +2633,11 @@ class _MainScreenState extends State<MainScreen>
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final p = _vm.positions[index].position;
+              // Derivative funding lives only in the funding ledger; margin
+              // positions keep their MARGIN_FUNDING field.
+              final funding = p.kind == 'future'
+                  ? _vm.derivFundingFor(p)
+                  : (p.interestValue != 0 ? p.interestValue : null);
               final sideColor = p.direction == 'buy'
                   ? Colors.green
                   : Colors.red;
@@ -2820,10 +2825,12 @@ class _MainScreenState extends State<MainScreen>
                             ),
                             infoItem('Reference: ', markStr),
                             infoItem('Liq: ', liqStr),
-                            if (p.interestValue != 0)
+                            if (funding != null)
                               infoItem(
                                 'Funding: ',
-                                _formatTradeHistoryNumber(p.interestValue),
+                                p.kind == 'future' && funding > 0
+                                    ? '+${_formatTradeHistoryNumber(funding)}'
+                                    : _formatTradeHistoryNumber(funding),
                               ),
                             infoItem(isCompact ? 'Ent: ' : 'Entity: ', entStr),
                           ],

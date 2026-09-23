@@ -468,6 +468,27 @@ class _OrderAvailCache {
       (price - rate).abs() > rate * 0.005;
 }
 
+/// Funding settled on a derivative position since it opened, as loaded from
+/// the funding ledger. [amount] is null when the load failed.
+class _DerivFundingCache {
+  final double? amount;
+  final String direction;
+  final DateTime fetchedAt;
+  const _DerivFundingCache(this.amount, this.direction, this.fetchedAt);
+
+  /// Funding only moves at the 8-hourly settlements (00/08/16 UTC). Refetch
+  /// once one has passed, after [ttl] (the ledger books it shortly after), or
+  /// when the position flipped side and so has a history of its own.
+  bool isStale(String currentDirection, Duration ttl) {
+    const period = Duration(hours: 8);
+    final now = DateTime.now();
+    return currentDirection != direction ||
+        now.difference(fetchedAt) > ttl ||
+        now.millisecondsSinceEpoch ~/ period.inMilliseconds !=
+            fetchedAt.millisecondsSinceEpoch ~/ period.inMilliseconds;
+  }
+}
+
 class _RateCache {
   final double rate;
   final DateTime fetchedAt;
@@ -699,6 +720,10 @@ class MainViewModel extends ChangeNotifier {
   final Map<String, _OrderAvailCache> _orderAvail = {};
   final Map<String, Future<void>> _orderAvailRequests = {};
   static const Duration _orderAvailTtl = Duration(seconds: 10);
+  final Map<String, _DerivFundingCache> _derivFunding = {};
+  final Map<String, Future<void>> _derivFundingRequests = {};
+  final Map<String, int> _derivFundingGenerations = {};
+  static const Duration _derivFundingTtl = Duration(minutes: 10);
   final Map<String, int> _accountMetricLoadGenerations = {};
   static const Duration _accountMetricsTtl = Duration(seconds: 10);
 
@@ -2506,6 +2531,54 @@ class MainViewModel extends ChangeNotifier {
     return dToDouble(rounded);
   }
 
+  /// Funding settled on a derivative [position] since it opened, from the
+  /// Bitfinex funding ledger (positive received, negative paid); null until
+  /// loaded or when unavailable. Reads the cache so rebuilds stay synchronous;
+  /// a missing or stale entry refreshes in the background.
+  double? derivFundingFor(Position position) {
+    if (position.kind != 'future' || position.size == 0) return null;
+    final symbol = _normalizeSymbol(position.instrumentName);
+    if (findTradingPairVm(symbol)?.pair.isVerified != true) return null;
+    final cached = _derivFunding[symbol];
+    if (cached == null ||
+        cached.isStale(position.direction, _derivFundingTtl)) {
+      // ignore: discarded_futures
+      _ensureDerivFunding(symbol, position.direction);
+    }
+    return cached?.direction == position.direction ? cached!.amount : null;
+  }
+
+  Future<void> _ensureDerivFunding(String symbol, String direction) {
+    final pending = _derivFundingRequests[symbol];
+    if (pending != null) return pending;
+    late final Future<void> request;
+    request = _loadDerivFunding(symbol, direction).whenComplete(() {
+      if (identical(_derivFundingRequests[symbol], request)) {
+        _derivFundingRequests.remove(symbol);
+      }
+    });
+    _derivFundingRequests[symbol] = request;
+    return request;
+  }
+
+  Future<void> _loadDerivFunding(String symbol, String direction) async {
+    final generation = _accountStateGeneration;
+    final positionGeneration = _derivFundingGenerations[symbol] ?? 0;
+    final amount = await _service.derivFundingSinceOpen(symbol);
+    // A close since the request started means the answer may describe the
+    // previous position.
+    if (!_isCurrentAccountState(generation) ||
+        (_derivFundingGenerations[symbol] ?? 0) != positionGeneration) {
+      return;
+    }
+    _derivFunding[symbol] = _DerivFundingCache(
+      amount,
+      direction,
+      DateTime.now(),
+    );
+    notifyListeners();
+  }
+
   String _orderAvailKey(String symbol, String direction, int leverage) =>
       '${_normalizeSymbol(symbol)}|${direction.toLowerCase()}|$leverage';
 
@@ -3369,6 +3442,8 @@ class MainViewModel extends ChangeNotifier {
     _accountMetricLoadGenerations.clear();
     _orderAvail.clear();
     _orderAvailRequests.clear();
+    _derivFunding.clear();
+    _derivFundingRequests.clear();
     _usdRates.clear();
     _usdRateRequests.clear();
     _btcRates.clear();
@@ -3639,6 +3714,14 @@ class MainViewModel extends ChangeNotifier {
       positions.removeAt(idx);
       _setPositionSubscriptionRequired(symbol, false);
       _cleanupRuntimeRiskSymbol(symbol);
+    }
+    // A reopened position starts a new funding history; drop the cache and
+    // detach any in-flight load of the closed one.
+    if (p.size == 0) {
+      _derivFunding.remove(symbol);
+      _derivFundingRequests.remove(symbol);
+      _derivFundingGenerations[symbol] =
+          (_derivFundingGenerations[symbol] ?? 0) + 1;
     }
     notifyListeners();
   }

@@ -1755,6 +1755,29 @@ class TradingService {
     }
   }
 
+  /// Funding settled on the open derivative position since it was opened
+  /// (positive received, negative paid), or null when unavailable. This is a
+  /// background read for display, so an unverified instrument simply yields
+  /// null instead of going through the write-path metadata guard.
+  Future<double?> derivFundingSinceOpen(String instrumentName) async {
+    if (!_authenticated) return null;
+    final symbol = _normalizeSymbol(instrumentName);
+    final pair = _verifiedInstruments[symbol];
+    if (pair == null || pair.type != TradingPairType.future) return null;
+    final generation = _sessionGeneration;
+    try {
+      final funding = await _api.getDerivFundingSinceOpen(
+        symbol,
+        currency: pair.marginCurrency,
+      );
+      if (!_isCurrentPrivateOperation(generation)) return null;
+      return funding;
+    } catch (e) {
+      _status('Funding unavailable for $instrumentName: $e');
+      return null;
+    }
+  }
+
   /// Returns the allowed (min, max) collateral range for the open derivative
   /// position, or null when unavailable.
   Future<({double min, double max})?> derivCollateralLimits(

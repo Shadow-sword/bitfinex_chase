@@ -1028,6 +1028,82 @@ class BitfinexApiService {
     return _number(row[0]).abs();
   }
 
+  /// Returns the derivative funding settled on the open position for [symbol]
+  /// since that position was opened, in its collateral [currency]: positive
+  /// means funding received, negative means paid. Returns null when there is
+  /// no open derivative position on [symbol].
+  ///
+  /// Positions carry no funding-fee field (MARGIN_FUNDING stays 0 on
+  /// derivatives), so this sums the ledger's "derivatives funding event"
+  /// entries (category 29) booked since the position's creation.
+  Future<double?> getDerivFundingSinceOpen(
+    String symbol, {
+    required String currency,
+  }) async {
+    _requireAuth();
+    final generation = _generation;
+    final wire = 't$symbol';
+    List<dynamic>? position;
+    for (final raw in _list(
+      await _transport.privatePost('v2/auth/r/positions'),
+    )) {
+      final row = _list(raw);
+      if (row.length > 15 && row[0] == wire && row[15] == 1) position = row;
+    }
+    if (position == null) return null;
+    // The positions endpoint leaves MTS_CREATE null; the audit of the same
+    // position id carries it.
+    final audit = _list(
+      await _transport.privatePost('v2/auth/r/positions/audit', {
+        'id': [position[11]],
+        'limit': 1,
+      }),
+    );
+    if (audit.isEmpty) throw const FormatException('Missing position audit');
+    final created = _list(audit.first)[12];
+    if (created is! num) {
+      throw const FormatException('Position audit has no creation time');
+    }
+    // Entries read "Funding Event tBTCF0:USTF0 (...) on wallet margin" and the
+    // currency ledger mixes every derivative settled in it, so match the
+    // symbol. Settlements share timestamps across symbols: page on an
+    // inclusive end and de-duplicate by ledger id so none are skipped.
+    final mentions = RegExp('\\bt?${RegExp.escape(symbol)}\\b');
+    const pageSize = 2500;
+    final seen = <Object>{};
+    var total = 0.0;
+    int? end;
+    while (true) {
+      final page = _list(
+        await _transport.privatePost('v2/auth/r/ledgers/$currency/hist', {
+          'category': 29,
+          'start': created.toInt(),
+          if (end != null) 'end': end,
+          'limit': pageSize,
+        }),
+      );
+      var added = 0;
+      int? oldest;
+      for (final raw in page) {
+        final row = _list(raw);
+        final mts = (row[3] as num).toInt();
+        oldest = oldest == null ? mts : math.min(oldest, mts);
+        if (!seen.add(row[0] as Object)) continue;
+        added++;
+        if (mentions.hasMatch('${row[8]}')) total += _number(row[5]);
+      }
+      if (page.length < pageSize) break;
+      if (added == 0) {
+        throw const FormatException('Funding ledger paging made no progress');
+      }
+      end = oldest;
+    }
+    if (generation != _generation) {
+      throw StateError('账号会话已变更，请重新操作');
+    }
+    return total;
+  }
+
   Future<Map<String, dynamic>?> getAccountSummary({
     String currency = 'USD',
   }) async {
