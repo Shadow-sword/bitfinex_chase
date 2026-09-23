@@ -1351,6 +1351,7 @@ class BitfinexApiService {
     required String address,
     required double amount,
     required String method,
+    required bool beneficiarySelf,
     String? destinationTag,
   }) async {
     _requireAuth();
@@ -1374,6 +1375,12 @@ class BitfinexApiService {
         'amount': _amount(amount),
         'address': address.trim(),
         if (paymentId != null && paymentId.isNotEmpty) 'payment_id': paymentId,
+        // Travel Rule data is mandatory for withdrawals of $1,000 or more;
+        // beneficiary_self makes Bitfinex fill the destination from KYC.
+        if (beneficiarySelf) ...{
+          'travel_rule_tos': true,
+          'beneficiary_self': true,
+        },
       }),
     );
     final data = _notification(response);

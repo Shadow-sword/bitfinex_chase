@@ -1755,6 +1755,7 @@ class MainViewModel extends ChangeNotifier {
     required String address,
     required double amount,
     required String method,
+    required bool beneficiarySelf,
     String? destinationTag,
   }) async {
     final ok = await _service.withdraw(
@@ -1762,6 +1763,7 @@ class MainViewModel extends ChangeNotifier {
       address: address,
       amount: amount,
       method: method,
+      beneficiarySelf: beneficiarySelf,
       destinationTag: destinationTag,
     );
     if (ok) {

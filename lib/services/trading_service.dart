@@ -2600,6 +2600,7 @@ class TradingService {
     required String address,
     required double amount,
     required String method,
+    required bool beneficiarySelf,
     String? destinationTag,
   }) async {
     if (!_authenticated) {
@@ -2613,6 +2614,7 @@ class TradingService {
         address: address,
         amount: amount,
         method: method,
+        beneficiarySelf: beneficiarySelf,
         destinationTag: destinationTag,
       );
       if (!_isCurrentPrivateOperation(generation)) return false;

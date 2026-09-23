@@ -86,6 +86,7 @@ class _MainScreenState extends State<MainScreen>
   bool _loadingWithdrawMethods = false;
   String? _withdrawMethodsError;
   final _withdrawTagController = TextEditingController();
+  bool _withdrawBeneficiarySelf = false;
   // Percent sizing buffer input
   final TextEditingController _percentBufferController =
       TextEditingController();
@@ -1320,6 +1321,20 @@ class _MainScreenState extends State<MainScreen>
                       decoration: const InputDecoration(labelText: 'Amount'),
                     ),
                   ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Checkbox(
+                        value: _withdrawBeneficiarySelf,
+                        onChanged: (v) => setState(
+                          () => _withdrawBeneficiarySelf = v ?? false,
+                        ),
+                      ),
+                      const Flexible(
+                        child: Text('收款人是本人（Travel Rule，使用 KYC 信息）'),
+                      ),
+                    ],
+                  ),
                   FilledButton(
                     onPressed:
                         _vm.isAuthenticated &&
@@ -1379,6 +1394,7 @@ class _MainScreenState extends State<MainScreen>
     final addr = _withdrawAddressController.text.trim();
     final method = _withdrawMethod;
     final amount = double.tryParse(_withdrawAmountController.text.trim());
+    final beneficiarySelf = _withdrawBeneficiarySelf;
     if (addr.isEmpty || method == null || method.isEmpty) {
       ScaffoldMessenger.of(
         context,
@@ -1405,6 +1421,7 @@ class _MainScreenState extends State<MainScreen>
               Text('Address: $addr'),
               Text('Method: $method'),
               Text('Memo: ${_withdrawTagController.text.trim()}'),
+              Text('Travel Rule: ${beneficiarySelf ? '收款人是本人（KYC）' : '未提供'}'),
             ],
           ),
           actions: [
@@ -1426,6 +1443,7 @@ class _MainScreenState extends State<MainScreen>
       address: addr,
       amount: amount,
       method: method,
+      beneficiarySelf: beneficiarySelf,
       destinationTag: _withdrawTagController.text.trim(),
     );
     if (!mounted) return;
