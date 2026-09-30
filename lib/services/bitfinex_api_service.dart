@@ -1420,8 +1420,13 @@ class BitfinexApiService {
       'TRAILING STOP' => 'trailing_stop',
       _ => rawType.toLowerCase(),
     };
+    // A long partial-fill history is truncated from the front, e.g.
+    // "...ED @ 83744.0(0.0059), PARTIALLY FILLED @ 83744.0(0.0059)". Terminal
+    // statuses keep their leading state and only truncate the "was" part.
     final state =
-        status.startsWith('ACTIVE') || status.startsWith('PARTIALLY FILLED')
+        status.startsWith('ACTIVE') ||
+            status.startsWith('PARTIALLY FILLED') ||
+            (status.startsWith('...') && status.contains('PARTIALLY FILLED'))
         ? (rawType.contains('STOP') ? 'untriggered' : 'open')
         : status.startsWith('EXECUTED')
         ? 'filled'
