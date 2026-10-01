@@ -5091,9 +5091,8 @@ class _MainScreenState extends State<MainScreen>
     final amount = TextEditingController(
       text: draft.pair.minTradeAmount.toString(),
     );
-    final price = TextEditingController(
-      text: _vm.computeLimitPrice(livePair, direction)?.toString() ?? '',
-    );
+    // Left empty, the order is priced from the latest book at submission.
+    final price = TextEditingController();
     var mode = 'base';
     var market = false;
     var postOnly = true;
@@ -5128,14 +5127,18 @@ class _MainScreenState extends State<MainScreen>
               draft.bestBid = livePair.bestBid;
               draft.bestAsk = livePair.bestAsk;
               final input = double.tryParse(amount.text.trim());
-              final limitPrice = market
+              final priceText = price.text.trim();
+              final limitPrice = market || priceText.isEmpty
                   ? null
-                  : double.tryParse(price.text.trim());
+                  : double.tryParse(priceText);
+              final bestPrice = market || priceText.isNotEmpty
+                  ? null
+                  : _vm.computeLimitPrice(livePair, direction);
               draft.buyPercent = input ?? 0;
               draft.sellPercent = input ?? 0;
               final reference = market
                   ? (direction == 'buy' ? livePair.bestAsk : livePair.bestBid)
-                  : limitPrice;
+                  : limitPrice ?? bestPrice;
               final percentAmount =
                   mode == 'percent' &&
                       input != null &&
@@ -5168,7 +5171,7 @@ class _MainScreenState extends State<MainScreen>
               final canSubmit =
                   _vm.canTradeSymbol(symbol) &&
                   conversion.canSubmit &&
-                  (market || (limitPrice != null && limitPrice > 0));
+                  (market || (reference != null && reference > 0));
               return AlertDialog(
                 title: Text(
                   '加仓 $symbol · ${direction.toUpperCase()} · ${position.position.kind == 'margin' ? 'Margin' : 'Derivatives'}',
@@ -5196,8 +5199,11 @@ class _MainScreenState extends State<MainScreen>
                           TextField(
                             controller: price,
                             enabled: !busy,
-                            decoration: const InputDecoration(
+                            decoration: InputDecoration(
                               labelText: 'Limit price',
+                              hintText: bestPrice == null
+                                  ? null
+                                  : 'Best ≈ $bestPrice（留空按下单时最新盘口）',
                             ),
                             keyboardType: const TextInputType.numberWithOptions(
                               decimal: true,

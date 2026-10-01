@@ -1394,99 +1394,38 @@ class TradingService {
     }
 
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    var submittedPrice = price;
-    final order = await _runInstrumentWrite(instrumentName, () async {
-      var submittedBook = ob;
-      const maxAttempts = 3;
-      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (!_isCurrentWrite(generation, instrumentName)) return null;
-        try {
-          final result = await _api.placeOrder(
-            instrumentName: instrumentName,
-            leverage: reduceOnly ? _reduceOnlyLeverage(pair) : leverage,
-            marginTrading: marginTrading,
-            direction: direction,
-            amount: normalizedAmount.apiAmount,
-            orderType: 'limit',
-            price: submittedPrice,
-            postOnly: postOnly,
-            reduceOnly: reduceOnly,
-          );
-          if (result == null) {
-            throw StateError('Exchange returned no order confirmation');
-          }
-          if (!result.isActive && !result.isFilled) {
-            throw OrderSubmissionException(
-              result.statusReason ?? result.orderState,
-              order: result,
-            );
-          }
-          return result;
-        } on OrderSubmissionException catch (e) {
-          // Only chasing opts into repricing and resubmitting a rejected order.
-          if (!enableChasing ||
-              !postOnly ||
-              !e.isPostOnlyRejection ||
-              attempt == maxAttempts) {
-            rethrow;
-          }
-          if (!_isCurrentWrite(generation, instrumentName)) rethrow;
-          final symbol = _normalizeSymbol(instrumentName);
-          var latestBook = _orderBooks[symbol];
-          if (latestBook == null ||
-              latestBook.timestamp <= submittedBook.timestamp) {
-            latestBook = await orderBookStream
-                .firstWhere(
-                  (book) =>
-                      _normalizeSymbol(book.instrumentName) == symbol &&
-                      book.timestamp > submittedBook.timestamp,
-                )
-                .timeout(
-                  const Duration(seconds: 3),
-                  onTimeout: () => throw StateError(
-                    'Post-only order rejected; no fresh order book for retry: $e',
-                  ),
-                );
-          }
-          if (!_isCurrentWrite(generation, instrumentName)) rethrow;
-          if (latestBook.bestBid <= 0 ||
-              latestBook.bestAsk <= latestBook.bestBid) {
-            throw StateError('Post-only retry stopped: invalid order book');
-          }
-          final tick = dFrom(pair.tickSizeAt(latestBook.bestAsk));
-          var target = direction == 'buy'
-              ? dFrom(latestBook.bestAsk) - tick
-              : dFrom(latestBook.bestBid) + tick;
-          if (customPrice != null) {
-            final limit = dFrom(customPrice);
-            if ((direction == 'buy' && target > limit) ||
-                (direction == 'sell' && target < limit)) {
-              target = limit;
-            }
-          }
-          submittedPrice = dToDouble(roundToTick(target, tick));
-          if (submittedPrice <= 0 ||
-              (direction == 'buy' && submittedPrice >= latestBook.bestAsk) ||
-              (direction == 'sell' && submittedPrice <= latestBook.bestBid) ||
-              (customPrice != null &&
-                  (direction == 'buy'
-                      ? submittedPrice > customPrice
-                      : submittedPrice < customPrice))) {
-            throw StateError('Post-only retry stopped: no valid maker price');
-          }
-          submittedBook = latestBook;
-          _status(
-            'Post-only rejected for $instrumentName: $e; '
-            'retry ${attempt + 1}/$maxAttempts @ $submittedPrice',
-          );
-        }
-      }
-      throw StateError('Post-only submission attempts exhausted');
-    });
+    final placed = await _runInstrumentWrite(
+      instrumentName,
+      () => _submitLimitOrder(
+        instrumentName: instrumentName,
+        pair: pair,
+        direction: direction,
+        price: price,
+        book: ob,
+        generation: generation,
+        // A best-price order re-quotes against the latest book after a
+        // post-only rejection; a manual price only does so under chasing.
+        repriceOnPostOnlyRejection:
+            postOnly && (enableChasing || customPrice == null),
+        priceLimit: customPrice,
+        submit: (submittedPrice) => _api.placeOrder(
+          instrumentName: instrumentName,
+          leverage: reduceOnly ? _reduceOnlyLeverage(pair) : leverage,
+          marginTrading: marginTrading,
+          direction: direction,
+          amount: normalizedAmount.apiAmount,
+          orderType: 'limit',
+          price: submittedPrice,
+          postOnly: postOnly,
+          reduceOnly: reduceOnly,
+        ),
+      ),
+    );
+    final order = placed?.order;
     if (!_isCurrentWrite(generation, instrumentName)) return null;
     if (order != null) {
       _status(
-        'Placed $direction order: ${normalizedAmount.apiAmount} @ $submittedPrice',
+        'Placed $direction order: ${normalizedAmount.apiAmount} @ ${placed!.price}',
       );
       _trackActiveOrder(order);
       if (enableChasing && order.isActive) {
@@ -1494,6 +1433,98 @@ class TradingService {
       }
     }
     return order;
+  }
+
+  /// Submits one limit order inside an instrument write. With
+  /// [repriceOnPostOnlyRejection], a post-only rejection (which never fills)
+  /// is re-quoted from a newer order book and resubmitted, never beyond
+  /// [priceLimit]. Returns null when the session or instrument went stale.
+  Future<({Order order, double price})?> _submitLimitOrder({
+    required String instrumentName,
+    required TradingPair pair,
+    required String direction,
+    required double price,
+    required OrderBookData book,
+    required int generation,
+    required bool repriceOnPostOnlyRejection,
+    required Future<Order?> Function(double price) submit,
+    double? priceLimit,
+  }) async {
+    var submittedPrice = price;
+    var submittedBook = book;
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (!_isCurrentWrite(generation, instrumentName)) return null;
+      try {
+        final result = await submit(submittedPrice);
+        if (result == null) {
+          throw StateError('Exchange returned no order confirmation');
+        }
+        if (!result.isActive && !result.isFilled) {
+          throw OrderSubmissionException(
+            result.statusReason ?? result.orderState,
+            order: result,
+          );
+        }
+        return (order: result, price: submittedPrice);
+      } on OrderSubmissionException catch (e) {
+        if (!repriceOnPostOnlyRejection ||
+            !e.isPostOnlyRejection ||
+            attempt == maxAttempts) {
+          rethrow;
+        }
+        if (!_isCurrentWrite(generation, instrumentName)) rethrow;
+        final symbol = _normalizeSymbol(instrumentName);
+        var latestBook = _orderBooks[symbol];
+        if (latestBook == null ||
+            latestBook.timestamp <= submittedBook.timestamp) {
+          latestBook = await orderBookStream
+              .firstWhere(
+                (book) =>
+                    _normalizeSymbol(book.instrumentName) == symbol &&
+                    book.timestamp > submittedBook.timestamp,
+              )
+              .timeout(
+                const Duration(seconds: 3),
+                onTimeout: () => throw StateError(
+                  'Post-only order rejected; no fresh order book for retry: $e',
+                ),
+              );
+        }
+        if (!_isCurrentWrite(generation, instrumentName)) rethrow;
+        if (latestBook.bestBid <= 0 ||
+            latestBook.bestAsk <= latestBook.bestBid) {
+          throw StateError('Post-only retry stopped: invalid order book');
+        }
+        final tick = dFrom(pair.tickSizeAt(latestBook.bestAsk));
+        var target = direction == 'buy'
+            ? dFrom(latestBook.bestAsk) - tick
+            : dFrom(latestBook.bestBid) + tick;
+        if (priceLimit != null) {
+          final limit = dFrom(priceLimit);
+          if ((direction == 'buy' && target > limit) ||
+              (direction == 'sell' && target < limit)) {
+            target = limit;
+          }
+        }
+        submittedPrice = dToDouble(roundToTick(target, tick));
+        if (submittedPrice <= 0 ||
+            (direction == 'buy' && submittedPrice >= latestBook.bestAsk) ||
+            (direction == 'sell' && submittedPrice <= latestBook.bestBid) ||
+            (priceLimit != null &&
+                (direction == 'buy'
+                    ? submittedPrice > priceLimit
+                    : submittedPrice < priceLimit))) {
+          throw StateError('Post-only retry stopped: no valid maker price');
+        }
+        submittedBook = latestBook;
+        _status(
+          'Post-only rejected for $instrumentName: $e; '
+          'retry ${attempt + 1}/$maxAttempts @ $submittedPrice',
+        );
+      }
+    }
+    throw StateError('Post-only submission attempts exhausted');
   }
 
   Future<Order?> placeMarketOrder(
@@ -2036,23 +2067,34 @@ class TradingService {
     final apiAmount = normalizedAmount.apiAmount;
 
     if (!_isCurrentWrite(generation, instrumentName)) return null;
-    final order = await _runInstrumentWrite(
+    final placed = await _runInstrumentWrite(
       instrumentName,
-      () => _api.placeOrder(
+      () => _submitLimitOrder(
         instrumentName: instrumentName,
-        marginTrading: isMargin,
-        leverage: _reduceOnlyLeverage(pair),
+        pair: pair,
         direction: closeDirection,
-        amount: apiAmount,
-        orderType: 'limit',
         price: price,
-        postOnly: true,
-        reduceOnly: pair.type == TradingPairType.future || isMargin,
+        book: ob,
+        generation: generation,
+        // A manual close price is submitted once as entered.
+        repriceOnPostOnlyRejection: customPrice == null,
+        submit: (submittedPrice) => _api.placeOrder(
+          instrumentName: instrumentName,
+          marginTrading: isMargin,
+          leverage: _reduceOnlyLeverage(pair),
+          direction: closeDirection,
+          amount: apiAmount,
+          orderType: 'limit',
+          price: submittedPrice,
+          postOnly: true,
+          reduceOnly: pair.type == TradingPairType.future || isMargin,
+        ),
       ),
     );
     if (!_isCurrentWrite(generation, instrumentName)) return null;
+    final order = placed?.order;
     if (order != null) {
-      _status('Placed close order: $apiAmount @ $price');
+      _status('Placed close order: $apiAmount @ ${placed!.price}');
       _trackActiveOrder(order);
     }
     return order;
