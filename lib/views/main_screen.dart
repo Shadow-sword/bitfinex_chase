@@ -3918,10 +3918,10 @@ class _MainScreenState extends State<MainScreen>
               builder: (context) {
                 final controller = _priceControllerFor(id);
                 final focus = _priceFocusFor(id);
+                final custom = isBuy ? tp.buyLimitPrice : tp.sellLimitPrice;
 
                 // Determine the intended display based on focus and custom/auto mode
                 if (!focus.hasFocus) {
-                  final custom = isBuy ? tp.buyLimitPrice : tp.sellLimitPrice;
                   final used =
                       custom ??
                       (_vm.computeLimitPrice(tp, isBuy ? 'buy' : 'sell') ?? 0);
@@ -3939,10 +3939,38 @@ class _MainScreenState extends State<MainScreen>
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
-                  decoration: const InputDecoration(hintText: 'auto'),
+                  decoration: InputDecoration(
+                    hintText: 'auto',
+                    suffixIcon: custom == null
+                        ? null
+                        : IconButton(
+                            key: ValueKey('$id-reset'),
+                            tooltip: 'Custom price · reset to auto',
+                            iconSize: 16,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 24,
+                              height: 24,
+                            ),
+                            padding: EdgeInsets.zero,
+                            onPressed: () {
+                              focus.unfocus();
+                              onChanged(0);
+                            },
+                            icon: const Icon(Icons.close),
+                          ),
+                    suffixIconConstraints: const BoxConstraints.tightFor(
+                      width: 24,
+                      height: 24,
+                    ),
+                  ),
                   onChanged: (v) {
                     // Only treat as custom input if user is actively editing
                     if (!focus.hasFocus) return;
+                    // Clearing the field returns to the auto price.
+                    if (v.trim().isEmpty) {
+                      onChanged(0);
+                      return;
+                    }
                     final d = double.tryParse(v);
                     if (d == null) return;
                     final positive = d < 0 ? -d : d;
