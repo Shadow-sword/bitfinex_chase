@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../services/trading_service.dart';
 import '../view_models/main_view_model.dart';
+import '../models/market_data.dart';
 import '../models/trading_pair.dart';
 import '../models/withdrawal.dart';
 import 'wallet_transfer_panel.dart';
@@ -51,6 +52,7 @@ class _MainScreenState extends State<MainScreen>
   void _selectTab(int logicalTab) =>
       _tabs.animateTo(_tabOrder.indexOf(logicalTab));
   void _cycleTab(int delta) => _selectTab((_currentTab + delta + 8) % 8);
+  static const _historyAllInstruments = 'All Instruments';
   String? _historySymbol;
   bool _historyMargin = false;
   DateTime _historyFrom = DateTime.now().subtract(const Duration(days: 30));
@@ -3185,8 +3187,11 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildHistoryTab() {
-    final symbols = _vm.tradingPairs.map((e) => e.symbol).toList();
-    _historySymbol ??= symbols.isNotEmpty ? symbols.first : null;
+    final symbols = [
+      _historyAllInstruments,
+      ..._vm.tradingPairs.map((e) => e.symbol),
+    ];
+    _historySymbol ??= symbols.first;
     return Padding(
       padding: const EdgeInsets.all(8.0),
       child: Column(
@@ -3315,7 +3320,9 @@ class _MainScreenState extends State<MainScreen>
                               }
                               try {
                                 await _vm.loadTradeHistory(
-                                  _historySymbol!,
+                                  _historySymbol == _historyAllInstruments
+                                      ? null
+                                      : _historySymbol,
                                   _historyFrom,
                                   _historyTo,
                                   marginTrading: _historyMargin,
@@ -3502,20 +3509,21 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildTradeHistoryRow(TradeHistoryRowVM row) {
-    final tp = _historyTradingPairFor(row.instrumentName);
-    final valUnit = tp.pair.quoteCurrency;
-    final amtUnit = tp.pair.apiAmountCurrency;
+    final pair = _vm.tradeHistoryPairFor(row.instrumentName);
+    final valUnit = pair.quoteCurrency;
+    final amtUnit = pair.apiAmountCurrency;
     final side = row.displaySide;
     final titleSide = side.toUpperCase();
+    final wallet = _tradeHistoryWalletText(row.primaryTrade);
     final title = row.isMerged
-        ? '${row.instrumentName} • $titleSide (${row.children.length} trades)'
-        : '${row.instrumentName} • $titleSide';
+        ? '${row.instrumentName} • $wallet • $titleSide (${row.children.length} trades)'
+        : '${row.instrumentName} • $wallet • $titleSide';
     final timeText = row.isMerged
         ? '${_hhmmss(row.oldestExecutedAtLocal)}–${_hhmmss(row.newestExecutedAtLocal)}'
         : _hhmmss(row.newestExecutedAtLocal);
-    final value = row.displayQuoteNotional(instrument: tp.pair);
+    final value = row.displayQuoteNotional(instrument: pair);
     final priceText = row.isMerged
-        ? _formatTradeHistoryParentPrice(row, instrument: tp.pair)
+        ? _formatTradeHistoryParentPrice(row, instrument: pair)
         : _formatTradeHistoryPrice(row.primaryTrade.price);
     final feeText = formatTradeHistoryFeeAmounts(row.feeAmounts);
     final subtitleParts = <String>[
@@ -3572,11 +3580,11 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildTradeHistoryChildRow(TradeHistoryEntryVM entry) {
-    final tp = _historyTradingPairFor(entry.trade.instrumentName);
-    final notional = tryTradeQuoteNotional(pair: tp.pair, trade: entry.trade);
+    final pair = _vm.tradeHistoryPairFor(entry.trade.instrumentName);
+    final notional = tryTradeQuoteNotional(pair: pair, trade: entry.trade);
     final val = notional == null ? null : dToDouble(notional);
-    final valUnit = tp.pair.quoteCurrency;
-    final amtUnit = tp.pair.apiAmountCurrency;
+    final valUnit = pair.quoteCurrency;
+    final amtUnit = pair.apiAmountCurrency;
     final feeText = formatTradeHistoryFeeAmounts(
       summarizeTradeHistoryFees([entry.trade]),
     );
@@ -3592,7 +3600,7 @@ class _MainScreenState extends State<MainScreen>
         onTap: () => _vm.onEntrySelectionChanged(entry, !entry.isSelected),
         selected: entry.isSelected,
         title: Text(
-          '${entry.trade.instrumentName} • ${entry.trade.direction.toUpperCase()}',
+          '${entry.trade.instrumentName} • ${_tradeHistoryWalletText(entry.trade)} • ${entry.trade.direction.toUpperCase()}',
         ),
         subtitle: Text(
           '${_hhmmss(entry.executedAtLocal)}  '
@@ -3610,10 +3618,8 @@ class _MainScreenState extends State<MainScreen>
     );
   }
 
-  TradingPairVM _historyTradingPairFor(String symbol) {
-    return _vm.findTradingPairVm(symbol) ??
-        TradingPairVM(TradingPair.unverified(symbol));
-  }
+  String _tradeHistoryWalletText(TradeHistory trade) =>
+      _vm.tradeHistoryWalletLabel(trade) ?? 'Unknown wallet';
 
   Color _tradeHistorySideColor(String side) {
     switch (side.toLowerCase()) {
@@ -3692,27 +3698,25 @@ class _MainScreenState extends State<MainScreen>
     String amountUnit = 'AMOUNT';
     String baseUnit = 'BASE';
     String quoteUnit = 'QUOTE';
-    final symbol =
-        _historySymbol ??
-        (_vm.tradeHistoryGroups.isNotEmpty &&
-                _vm.tradeHistoryGroups.first.leafEntries.isNotEmpty
-            ? _vm
-                  .tradeHistoryGroups
-                  .first
-                  .leafEntries
-                  .first
-                  .trade
-                  .instrumentName
-            : null);
+    final symbol = _vm.tradeHistoryAllInstruments
+        ? _vm.tradeHistorySelectedInstrument
+        : (_historySymbol == _historyAllInstruments ? null : _historySymbol) ??
+              (_vm.tradeHistoryGroups.isNotEmpty &&
+                      _vm.tradeHistoryGroups.first.leafEntries.isNotEmpty
+                  ? _vm
+                        .tradeHistoryGroups
+                        .first
+                        .leafEntries
+                        .first
+                        .trade
+                        .instrumentName
+                  : null);
     if (symbol != null) {
-      final tp =
-          _vm.findTradingPairVm(symbol) ??
-          TradingPairVM(TradingPair.unverified(symbol));
+      final pair = _vm.tradeHistoryPairFor(symbol);
       amountUnit =
-          _vm.tradeHistorySelectedAmountCurrency ?? tp.pair.apiAmountCurrency;
-      baseUnit = tp.pair.baseCurrency;
-      quoteUnit =
-          _vm.tradeHistorySelectedQuoteCurrency ?? tp.pair.quoteCurrency;
+          _vm.tradeHistorySelectedAmountCurrency ?? pair.apiAmountCurrency;
+      baseUnit = pair.baseCurrency;
+      quoteUnit = _vm.tradeHistorySelectedQuoteCurrency ?? pair.quoteCurrency;
     }
 
     final avgUnit = '$quoteUnit/$baseUnit';

@@ -573,6 +573,9 @@ class MainViewModel extends ChangeNotifier {
   final List<TradeHistoryDayGroupVM> tradeHistoryGroups = [];
   TradingPair? _tradeHistoryInstrument;
   String? _tradeHistoryRequestedInstrument;
+  // All-instruments history: catalogue metadata per loaded symbol.
+  bool tradeHistoryAllInstruments = false;
+  final Map<String, TradingPair> _tradeHistoryInstruments = {};
   int _tradeHistoryRequestGeneration = 0;
   // Trade History position navigation
   // Each position is a contiguous range in chronological order where
@@ -686,6 +689,7 @@ class MainViewModel extends ChangeNotifier {
   String? tradeHistorySelectedAmountCurrency;
   String? tradeHistorySelectedQuoteCurrency;
   String? tradeHistorySelectedSettlementCurrency;
+  String? tradeHistorySelectedInstrument;
   // Aggregated fee for selected trades. Keep total/currency for legacy single-currency
   // callers; use tradeHistorySelectedFeeSummary for display because fees may use
   // multiple currencies.
@@ -2031,8 +2035,9 @@ class MainViewModel extends ChangeNotifier {
 
   String? tradeHistoryModeLabel;
 
+  /// Loads [instrument]'s trades, or every instrument's when it is null.
   Future<void> loadTradeHistory(
-    String instrument,
+    String? instrument,
     DateTime from,
     DateTime to, {
     bool marginTrading = false,
@@ -2044,28 +2049,43 @@ class MainViewModel extends ChangeNotifier {
       to,
       marginTrading: marginTrading,
     );
+    final instruments = instrument == null
+        ? await _service.getCatalogueInstruments(
+            list.map((t) => t.instrumentName),
+          )
+        : const <String, TradingPair>{};
     if (_disposed || requestGeneration != _tradeHistoryRequestGeneration) {
       return;
     }
-    final normalizedInstrument = _normalizeSymbol(instrument);
-    _tradeHistoryRequestedInstrument = normalizedInstrument;
-    final metadata = _service.getTradingPairBySymbol(
-      normalizedInstrument,
-      customTradingPairs,
-    );
-    _tradeHistoryInstrument =
-        metadata != null &&
-            metadata.isVerified &&
-            _normalizeSymbol(metadata.symbol) == normalizedInstrument
-        ? metadata
-        : null;
-    tradeHistoryModeLabel = _tradeHistoryInstrument == null
-        ? 'Unverified market'
-        : metadata!.type == TradingPairType.future
-        ? 'Derivatives'
-        : marginTrading
-        ? 'Margin'
-        : 'Exchange';
+    tradeHistoryAllInstruments = instrument == null;
+    _tradeHistoryInstruments
+      ..clear()
+      ..addAll(instruments);
+    if (instrument == null) {
+      _tradeHistoryRequestedInstrument = null;
+      _tradeHistoryInstrument = null;
+      tradeHistoryModeLabel = 'All instruments';
+    } else {
+      final normalizedInstrument = _normalizeSymbol(instrument);
+      _tradeHistoryRequestedInstrument = normalizedInstrument;
+      final metadata = _service.getTradingPairBySymbol(
+        normalizedInstrument,
+        customTradingPairs,
+      );
+      _tradeHistoryInstrument =
+          metadata != null &&
+              metadata.isVerified &&
+              _normalizeSymbol(metadata.symbol) == normalizedInstrument
+          ? metadata
+          : null;
+      tradeHistoryModeLabel = _tradeHistoryInstrument == null
+          ? 'Unverified market'
+          : metadata!.type == TradingPairType.future
+          ? 'Derivatives'
+          : marginTrading
+          ? 'Margin'
+          : 'Exchange';
+    }
     tradeHistory
       ..clear()
       ..addAll(list);
@@ -2092,6 +2112,46 @@ class MainViewModel extends ChangeNotifier {
     _currentTradeHistoryPositionIndex = null;
     _refreshTradeHistorySelectionSummary();
     notifyListeners();
+  }
+
+  /// Metadata for a loaded history symbol: the all-instruments catalogue
+  /// lookup first, then the configured trading pairs.
+  TradingPair tradeHistoryPairFor(String symbol) {
+    final normalized = _normalizeSymbol(symbol);
+    return _tradeHistoryInstruments[normalized] ??
+        findTradingPairVm(normalized)?.pair ??
+        TradingPair.unverified(normalized);
+  }
+
+  /// Wallet the trade executed in, or null when Bitfinex omitted the order
+  /// type of a spot trade.
+  String? tradeHistoryWalletLabel(TradeHistory trade) {
+    final pair = tradeHistoryPairFor(trade.instrumentName);
+    if (pair.isVerified && pair.type == TradingPairType.future) {
+      return 'Derivatives';
+    }
+    final isExchange = trade.isExchange;
+    if (isExchange == null) return null;
+    return isExchange ? 'Exchange' : 'Margin';
+  }
+
+  /// The single verified instrument behind an all-instruments selection.
+  /// Exchange and Margin fills of one symbol are separate books, so a
+  /// selection mixing wallets (or instruments) has no PnL context.
+  TradingPair? _allInstrumentsSelectionPair(List<TradeHistoryEntryVM> entries) {
+    if (entries.isEmpty) return null;
+    final first = entries.first.trade;
+    final symbol = _normalizeSymbol(first.instrumentName);
+    final wallet = tradeHistoryWalletLabel(first);
+    if (wallet == null) return null;
+    for (final entry in entries.skip(1)) {
+      if (_normalizeSymbol(entry.trade.instrumentName) != symbol ||
+          tradeHistoryWalletLabel(entry.trade) != wallet) {
+        return null;
+      }
+    }
+    final pair = tradeHistoryPairFor(symbol);
+    return pair.isVerified ? pair : null;
   }
 
   void setAllTradeHistorySelection(bool selected) {
@@ -2196,11 +2256,13 @@ class MainViewModel extends ChangeNotifier {
     final selected = tradeHistoryGroups
         .expand((g) => g.leafEntries.where((t) => t.isSelected))
         .toList();
-    final pair = _tradeHistoryInstrument;
-    final hasVerifiedContext = pair != null && pair.isVerified;
     final structurallyValid = selected
         .where(isTradeHistoryEntryStructurallyValid)
         .toList(growable: false);
+    final pair = tradeHistoryAllInstruments
+        ? _allInstrumentsSelectionPair(structurallyValid)
+        : _tradeHistoryInstrument;
+    final hasVerifiedContext = pair != null && pair.isVerified;
     final hasCompletePnlCoverage =
         hasVerifiedContext &&
         structurallyValid.every(
@@ -2214,6 +2276,8 @@ class MainViewModel extends ChangeNotifier {
         selected.length - structurallyValid.length;
     tradeHistorySelectionUnavailableReason = structurallyValid.isEmpty
         ? null
+        : tradeHistoryAllInstruments && !hasVerifiedContext
+        ? 'Select trades of one verified instrument and wallet'
         : !hasVerifiedContext
         ? 'Verified instrument metadata unavailable'
         : !hasCompletePnlCoverage
@@ -2289,6 +2353,9 @@ class MainViewModel extends ChangeNotifier {
         ? (verifiedPair!.settlementCurrency.isNotEmpty
               ? verifiedPair.settlementCurrency
               : verifiedPair.quoteCurrency)
+        : null;
+    tradeHistorySelectedInstrument = hasCompletePnlCoverage
+        ? verifiedPair!.symbol
         : null;
     final feeAmounts = summarizeTradeHistoryFees(
       structurallyValid.map((e) => e.trade),
@@ -3422,6 +3489,8 @@ class MainViewModel extends ChangeNotifier {
     _tradeHistoryRequestGeneration++;
     _tradeHistoryInstrument = null;
     _tradeHistoryRequestedInstrument = null;
+    tradeHistoryAllInstruments = false;
+    _tradeHistoryInstruments.clear();
     tradeHistory.clear();
     tradeHistoryGroups.clear();
     _tradeHistoryPositions.clear();

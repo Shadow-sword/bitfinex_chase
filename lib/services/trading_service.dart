@@ -2375,8 +2375,10 @@ class TradingService {
     return order;
   }
 
+  /// Loads trades for [instrumentName], or for every instrument (Exchange,
+  /// Margin and Derivatives together) when it is null.
   Future<List<TradeHistory>> getTradeHistory(
-    String instrumentName,
+    String? instrumentName,
     DateTime from,
     DateTime to, {
     bool marginTrading = false,
@@ -2387,6 +2389,12 @@ class TradingService {
     }
     final generation = _sessionGeneration;
     try {
+      if (instrumentName == null) {
+        final trades = await _api.getUserTradesByInstrument(from: from, to: to);
+        if (!_isCurrentPrivateOperation(generation)) return const [];
+        _status('Loaded ${trades.length} trades (All instruments)');
+        return trades;
+      }
       final pair = await _api.getInstrument(instrumentName);
       final trades = await _api.getUserTradesByInstrument(
         instrumentName: instrumentName,
@@ -2419,6 +2427,19 @@ class TradingService {
       _status('Load trade history failed: $e');
       rethrow;
     }
+  }
+
+  /// Exchange catalogue metadata for [symbols]; symbols the catalogue does not
+  /// list (e.g. delisted pairs) are omitted.
+  Future<Map<String, TradingPair>> getCatalogueInstruments(
+    Iterable<String> symbols,
+  ) async {
+    final result = <String, TradingPair>{};
+    for (final symbol in symbols.map(_normalizeSymbol).toSet()) {
+      final pair = await _api.getInstrument(symbol);
+      if (pair != null && pair.isVerified) result[symbol] = pair;
+    }
+    return result;
   }
 
   Future<(double equity, double maintenanceMargin, double availableFunds)?>

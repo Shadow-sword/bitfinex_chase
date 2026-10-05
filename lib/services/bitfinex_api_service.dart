@@ -824,14 +824,18 @@ class BitfinexApiService {
     return null;
   }
 
+  /// Loads executions for [instrumentName], or for every instrument when it
+  /// is null.
   Future<List<TradeHistory>> getUserTradesByInstrument({
-    required String instrumentName,
+    String? instrumentName,
     required DateTime from,
     required DateTime to,
     bool historical = true,
   }) async {
     _requireAuth();
-    final symbol = TradingPair.canonicalSymbol(instrumentName);
+    final path = instrumentName == null
+        ? 'v2/auth/r/trades/hist'
+        : 'v2/auth/r/trades/t${TradingPair.canonicalSymbol(instrumentName)}/hist';
     final trades = <String, TradeHistory>{};
     var start = from.millisecondsSinceEpoch;
     final end = to.millisecondsSinceEpoch;
@@ -839,7 +843,7 @@ class BitfinexApiService {
     const limit = 2500;
     while (start <= end) {
       final rows = _list(
-        await _transport.privatePost('v2/auth/r/trades/t$symbol/hist', {
+        await _transport.privatePost(path, {
           'start': start,
           'end': end,
           'sort': 1,
