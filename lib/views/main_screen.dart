@@ -3305,9 +3305,17 @@ class _MainScreenState extends State<MainScreen>
                     FilledButton(
                       onPressed: (_historySymbol != null && _vm.isAuthenticated)
                           ? () async {
-                              // 非自定义范围：按需在此时计算 From/To
-                              if (_selectedQuickRange != null &&
-                                  _selectedQuickRange != '自定义') {
+                              // 未选范围：默认最近 30 天，截止到本次点击 Load
+                              if (_selectedQuickRange == null) {
+                                final now = DateTime.now();
+                                setState(() {
+                                  _historyFrom = now.subtract(
+                                    const Duration(days: 30),
+                                  );
+                                  _historyTo = now;
+                                });
+                              } else if (_selectedQuickRange != '自定义') {
+                                // 非自定义范围：按需在此时计算 From/To
                                 final range = _computeQuickRange(
                                   _selectedQuickRange!,
                                 );
