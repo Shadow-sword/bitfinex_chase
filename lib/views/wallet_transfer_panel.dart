@@ -25,9 +25,11 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
   final _amount = TextEditingController();
   late final int _sessionGeneration;
   List<TransferBalance> _balances = [];
+  List<String> _listedCurrencies = [];
   TransferWallet _from = TransferWallet.exchange;
   TransferWallet _to = TransferWallet.margin;
   String? _currency;
+  String? _currencyTo;
   bool _loading = false;
   bool _busy = false;
   String? _error;
@@ -50,6 +52,24 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
     return null;
   }
 
+  List<String> get _destinationCurrencies {
+    final source = _source;
+    if (source == null) return const [];
+    final convertible =
+        _from != TransferWallet.derivatives &&
+        _to != TransferWallet.derivatives;
+    return [
+      if (_to != _from) _to.currencyFor(source.currency),
+      if (convertible)
+        ...usdtConversionTargets(source.currency, _listedCurrencies),
+    ];
+  }
+
+  String? get _destinationCurrency {
+    final options = _destinationCurrencies;
+    return options.contains(_currencyTo) ? _currencyTo : options.firstOrNull;
+  }
+
   @override
   void dispose() {
     _amount.dispose();
@@ -64,12 +84,16 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
       _balances = [];
     });
     try {
-      final balances = await widget.service.getTransferBalances(
-        sessionGeneration: _sessionGeneration,
-      );
+      final (balances, listedCurrencies) = await (
+        widget.service.getTransferBalances(
+          sessionGeneration: _sessionGeneration,
+        ),
+        widget.service.getListedCurrencies(),
+      ).wait;
       if (!mounted) return;
       setState(() {
         _balances = balances;
+        _listedCurrencies = listedCurrencies;
         if (!_sources.any((b) => b.currency == _currency)) {
           _currency = _sources.firstOrNull?.currency;
           _amount.clear();
@@ -104,12 +128,14 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
     if (_busy || _loading) return;
     final source = _source;
     final destination = _to;
+    final destinationCurrency = _destinationCurrency;
     late final Decimal quantity;
     try {
       quantity = parseTransferAmount(_amount.text);
       if (source == null || source.available == null) {
         throw StateError('请选择币种并获取钱包可用余额');
       }
+      if (destinationCurrency == null) throw StateError('请选择转入币种');
       if (quantity > source.available!) {
         throw StateError('划转数量超过钱包可用余额');
       }
@@ -131,7 +157,7 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
             '${widget.accountLabel}\n\n'
             '${source.wallet.label} → ${destination.label}\n'
             '转出：$quantity ${source.currency}\n'
-            '转入：$quantity ${destination.currencyFor(source.currency)}',
+            '转入：$quantity $destinationCurrency',
           ),
           actions: [
             TextButton(
@@ -153,6 +179,7 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
           from: source.wallet,
           to: destination,
           currency: source.currency,
+          currencyTo: destinationCurrency,
           amount: quantity.toString(),
         );
       } catch (e) {
@@ -168,7 +195,7 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
       setState(() {
         _amount.clear();
         _result =
-            '划转成功：$quantity ${source.currency}，'
+            '划转成功：$quantity ${source.currency} → $destinationCurrency，'
             '${source.wallet.label} → ${destination.label}';
       });
       await _refresh();
@@ -182,12 +209,14 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
   Widget build(BuildContext context) {
     final source = _source;
     final available = source?.available;
+    final destinationCurrency = _destinationCurrency;
     final enabled = !_busy && !_loading;
     return Card(
       child: ExpansionTile(
         title: const Text('Transfer 钱包划转'),
         subtitle: const Text(
-          '同账号 Exchange / Margin / Funding / Capital Raise / Derivatives',
+          '同账号 Exchange / Margin / Funding / Capital Raise / Derivatives，'
+          '支持 UST / USDT0 互相转换',
         ),
         onExpansionChanged: (expanded) {
           if (expanded && !_busy) _refresh();
@@ -219,6 +248,7 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
                             _from = wallet;
                             if (_to == _from) _to = previous;
                             _currency = _sources.firstOrNull?.currency;
+                            _currencyTo = null;
                             _amount.clear();
                             _error = null;
                             _result = null;
@@ -234,7 +264,6 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
                   initialValue: _to,
                   decoration: const InputDecoration(labelText: '转入钱包'),
                   items: TransferWallet.values
-                      .where((w) => w != _from)
                       .map(
                         (w) => DropdownMenuItem(value: w, child: Text(w.label)),
                       )
@@ -263,8 +292,25 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
                   onChanged: enabled
                       ? (currency) => setState(() {
                           _currency = currency;
+                          _currencyTo = null;
                           _amount.clear();
                         })
+                      : null,
+                ),
+              ),
+              SizedBox(
+                width: 230,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey(
+                    'currency-to-$_from-$_to-$_currency-$destinationCurrency-$_loading',
+                  ),
+                  initialValue: destinationCurrency,
+                  decoration: const InputDecoration(labelText: '转入币种'),
+                  items: _destinationCurrencies
+                      .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                      .toList(),
+                  onChanged: enabled
+                      ? (currency) => setState(() => _currencyTo = currency)
                       : null,
                 ),
               ),
@@ -302,7 +348,8 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
                   ),
               ],
             ),
-            Text('转入币种：${_to.currencyFor(source.currency)}'),
+            if (destinationCurrency == null)
+              const Text('同一钱包仅支持 UST 与 USDT0 互相转换。'),
           ] else if (!_loading)
             const Text('当前转出钱包没有可划转币种。'),
           const Text('各钱包支持的币种、账号权限和划转限制以 Bitfinex 为准。'),
@@ -322,7 +369,10 @@ class _WalletTransferPanelState extends State<WalletTransferPanel> {
               ),
               FilledButton(
                 onPressed:
-                    enabled && available != null && available > Decimal.zero
+                    enabled &&
+                        destinationCurrency != null &&
+                        available != null &&
+                        available > Decimal.zero
                     ? _confirmAndTransfer
                     : null,
                 child: Text(_busy ? '处理中…' : '划转'),

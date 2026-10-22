@@ -2499,6 +2499,8 @@ class TradingService {
     return balances;
   }
 
+  Future<List<String>> getListedCurrencies() => _api.getListedCurrencies();
+
   bool _transferringBetweenWallets = false;
 
   Future<void> transferBetweenWallets({
@@ -2506,6 +2508,7 @@ class TradingService {
     required TransferWallet from,
     required TransferWallet to,
     required String currency,
+    required String currencyTo,
     required String amount,
   }) async {
     if (!_isCurrentPrivateOperation(sessionGeneration)) {
@@ -2518,11 +2521,13 @@ class TradingService {
         from: from,
         to: to,
         currency: currency,
+        currencyTo: currencyTo,
         amount: amount,
       );
       if (_isCurrentPrivateOperation(sessionGeneration)) {
         _status(
-          'Wallet transfer succeeded: $amount $currency, ${from.label} → ${to.label}',
+          'Wallet transfer succeeded: $amount $currency → $currencyTo, '
+          '${from.label} → ${to.label}',
         );
       }
     } finally {

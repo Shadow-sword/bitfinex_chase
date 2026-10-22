@@ -896,27 +896,40 @@ class BitfinexApiService {
     return balances;
   }
 
+  Future<List<String>> getListedCurrencies() async => _list(
+    _list(await _transport.publicGet('v2/conf/pub:list:currency')).single,
+  ).cast<String>();
+
   Future<void> transferBetweenWallets({
     required TransferWallet from,
     required TransferWallet to,
     required String currency,
+    required String currencyTo,
     required String amount,
   }) async {
     _requireAuth();
     final generation = _generation;
-    if (from == to) throw ArgumentError('请选择不同的转出和转入钱包');
+    final converting = currencyTo != to.currencyFor(currency);
+    if (from == to && !converting) {
+      throw ArgumentError('请选择不同的转出和转入钱包');
+    }
     final quantity = parseTransferAmount(amount);
     if (currency != from.currencyFor(currency)) {
       throw ArgumentError('币种与转出钱包不匹配');
     }
-    final destinationCurrency = to.currencyFor(currency);
-    if (from == TransferWallet.derivatives || to == TransferWallet.derivatives) {
-      final currencies = _list(
-        _list(await _transport.publicGet('v2/conf/pub:list:currency')).single,
-      );
-      if (!currencies.contains(currency) ||
-          !currencies.contains(destinationCurrency)) {
+    final derivatives =
+        from == TransferWallet.derivatives || to == TransferWallet.derivatives;
+    if (converting && derivatives) {
+      throw ArgumentError('Derivatives 钱包不支持 UST / USDT0 转换');
+    }
+    if (converting || derivatives) {
+      final currencies = await getListedCurrencies();
+      if (!currencies.contains(currency) || !currencies.contains(currencyTo)) {
         throw ArgumentError('该币种不支持所选钱包间划转');
+      }
+      if (converting &&
+          !usdtConversionTargets(currency, currencies).contains(currencyTo)) {
+        throw ArgumentError('仅支持 UST 与 USDT0 互相转换');
       }
     }
     final balances = await getTransferBalances();
@@ -934,7 +947,7 @@ class BitfinexApiService {
         'from': from.apiName,
         'to': to.apiName,
         'currency': currency,
-        'currency_to': destinationCurrency,
+        'currency_to': currencyTo,
         'amount': quantity.toString(),
       }),
     );

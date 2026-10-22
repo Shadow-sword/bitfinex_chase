@@ -28,6 +28,23 @@ enum TransferWallet {
   }
 }
 
+/// Currencies Bitfinex converts [currency] into via transfer: UST to each
+/// listed USDT0 network currency, and USDT0 back to UST.
+List<String> usdtConversionTargets(
+  String currency,
+  Iterable<String> listedCurrencies,
+) {
+  if (currency == 'UST') {
+    return listedCurrencies.where((c) => c.startsWith('USDT0')).toList()
+      ..sort();
+  }
+  return currency.startsWith('USDT0') &&
+          listedCurrencies.contains(currency) &&
+          listedCurrencies.contains('UST')
+      ? const ['UST']
+      : const [];
+}
+
 class TransferBalance {
   const TransferBalance({
     required this.wallet,
