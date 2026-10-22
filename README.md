@@ -25,7 +25,7 @@ flutter run -d macos
 - 原生 Stop、Stop Limit、Trailing Stop；Margin 和合约保护订单使用 reduce-only。
 - 成交历史按日期查询、快捷日期范围、日分组、订单聚合、成交选择与统计；分页按成交 ID 去重。可选 All Instruments 一次加载全部交易对（Exchange / Margin / Derivatives），每条成交标注所属钱包；统计与盈亏仅在所选成交属于同一交易对和钱包时计算。
 - 钱包余额、可用/冻结金额和并发资产折算；隐藏零余额按 balance 判断；提现与提现历史。提现前需填写 Bitfinex method/network、地址和可选 Memo，用户确认后才提交。Paper 不提供实际提现。
-- 账户页提供同账号钱包划转：Exchange、Margin、Funding、Capital Raise、Derivatives。按转出钱包选择币种，支持全部可用余额和提交前确认；提交前复核余额，成功后刷新钱包及账户。Derivatives 自动映射对应 F0 币种，实际币种资格与账号权限由 Bitfinex 校验。
+- 账户页提供同账号钱包划转：Exchange、Margin、Funding、Capital Raise、Derivatives。按转出钱包选择币种，支持全部可用余额和提交前确认；提交前复核余额，成功后刷新钱包及账户。Derivatives 自动映射对应 F0 币种。非 Derivatives 钱包间（含同一钱包）支持 UST 与 USDT0（按网络区分，如 `USDT0ARB`、`USDT0XPL`）互相转换，可转换币种取自交易所币种列表。实际币种资格与账号权限由 Bitfinex 校验。
 - 环境隔离的交易对元数据缓存，以及认证后的账户信息/提款记录缓存；缓存不会恢复实时价格、余额或交易权限。
 - 设置持久化、可选记住凭证、配置导入导出及加密导出、主题、桌面窗口恢复、成交通知。
 
